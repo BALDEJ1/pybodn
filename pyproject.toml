@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "pybodn"
-version = "0.0.1"
+version = "0.1.0"
 description = "A foundational memory engine for intelligent systems."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "BALDEJ1" }]
 keywords = ["memory", "agent-memory", "ai-memory", "index", "retrieval"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",

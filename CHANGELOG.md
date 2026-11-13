@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-13
+
 ### Added
 
 - `MemoryEngine.sqlite(path, *, timeout=5.0)`: an engine that keeps records in an SQLite file, shared safely by threads and processes. While another process writes, a write waits up to `timeout` seconds. A file that is not pybodn's, or comes from a newer pybodn, is refused and left unchanged.

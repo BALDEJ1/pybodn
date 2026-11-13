@@ -75,7 +75,7 @@ jobs:
           python-version: "3.12"
       - run: uv build
       - run: uvx twine==7.0.0 check --strict dist/*
-      - name: Import the wheel in a clean environment
+      - name: Run the README examples against the wheel in a clean environment
         run: >-
-          uv run --isolated --no-project --with dist/*.whl
-          python -c "import pybodn; from pybodn.indexes import HashIndex; print(pybodn.__version__)"
+          uv run --isolated --no-project --with dist/*.whl --with pytest==9.2.0
+          pytest -p no:cacheprovider tests/test_readme.py
