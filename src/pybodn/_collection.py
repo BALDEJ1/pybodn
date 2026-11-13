@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
-from typing import TypedDict, Unpack
+from typing import Any, TypedDict, Unpack
 from uuid import uuid4
 
 from pybodn import _validation as validate
@@ -42,12 +42,16 @@ class MemoryChanges(MemoryFields, total=False):
     content: str
 
 
-class _CheckedChanges(TypedDict, total=False):
-    content: str
-    metadata: dict[str, JSONValue]
-    tags: tuple[str, ...]
-    importance: float
-    source: str | None
+# Each field a caller sets, and the check that turns the value given into the value stored.
+# Adding and changing a record both use this one table.
+_FIELD_CHECKS: dict[str, Callable[[object], Any]] = {
+    "content": partial(validate.text, "content"),
+    "key": validate.key,
+    "metadata": validate.metadata,
+    "tags": validate.tags,
+    "importance": validate.importance,
+    "source": validate.source,
+}
 
 
 class Collection:
@@ -165,16 +169,8 @@ class Collection:
 
 def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:
     """Check ``memory``. The result makes its record from an id, two times and a version."""
-    return partial(
-        MemoryRecord,
-        namespace=namespace,
-        content=validate.text("content", memory.content),
-        key=validate.key(memory.key),
-        metadata=validate.metadata(memory.metadata),
-        tags=validate.tags(memory.tags),
-        importance=validate.importance(memory.importance),
-        source=validate.source(memory.source),
-    )
+    checked = {name: check(getattr(memory, name)) for name, check in _FIELD_CHECKS.items()}
+    return partial(MemoryRecord, namespace=namespace, **checked)
 
 
 def _reject_repeated_keys(records: Iterable[MemoryRecord]) -> None:
@@ -194,19 +190,8 @@ def _reject_unknown(method: str, fields: Mapping[str, object], known: frozenset[
         raise TypeError(f"{method}() got an unexpected keyword argument {unknown[0]!r}")
 
 
-def _check_changes(changes: Mapping[str, object]) -> _CheckedChanges:
+def _check_changes(changes: Mapping[str, object]) -> dict[str, Any]:
     _reject_unknown("update", changes, MemoryChanges.__optional_keys__)
     if not changes:
         raise ValidationError("update needs at least one field to change")
-    checked: _CheckedChanges = {}
-    if "content" in changes:
-        checked["content"] = validate.text("content", changes["content"])
-    if "metadata" in changes:
-        checked["metadata"] = validate.metadata(changes["metadata"])
-    if "tags" in changes:
-        checked["tags"] = validate.tags(changes["tags"])
-    if "importance" in changes:
-        checked["importance"] = validate.importance(changes["importance"])
-    if "source" in changes:
-        checked["source"] = validate.source(changes["source"])
-    return checked
+    return {name: check(changes[name]) for name, check in _FIELD_CHECKS.items() if name in changes}
