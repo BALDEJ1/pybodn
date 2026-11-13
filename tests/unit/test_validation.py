@@ -1,4 +1,5 @@
 import math
+import threading
 from enum import StrEnum
 from fractions import Fraction
 from types import MappingProxyType
@@ -11,6 +12,7 @@ from pybodn.errors import ValidationError
 
 MAX_INTEGER = 2**63 - 1
 LONE_SURROGATE = "\ud800"
+WAIT_SECONDS = 10  # a check that never ends fails after this instead of hanging
 
 
 class Color(StrEnum):
@@ -179,10 +181,24 @@ def test_metadata_that_reuses_one_list_over_and_over_is_rejected() -> None:
     value: list[object] = []
     for _ in range(30):
         value = [value, value]
+    errors: list[Exception] = []
 
-    # Act / Assert
-    with pytest.raises(ValidationError, match="1,000,000 values"):
-        validate.metadata({"value": value})
+    def check() -> None:
+        try:
+            validate.metadata({"value": value})
+        except Exception as error:
+            errors.append(error)
+
+    # Act: in a thread, so a broken limit fails the test instead of hanging it
+    worker = threading.Thread(target=check, daemon=True)
+    worker.start()
+    worker.join(timeout=WAIT_SECONDS)
+
+    # Assert
+    assert not worker.is_alive(), f"the check did not finish in {WAIT_SECONDS} seconds"
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValidationError)
+    assert "1,000,000 values" in str(errors[0])
 
 
 def test_metadata_turns_str_subclasses_into_plain_strs() -> None:
