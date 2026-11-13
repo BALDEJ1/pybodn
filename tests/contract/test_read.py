@@ -5,6 +5,7 @@ from pybodn.errors import RecordNotFoundError
 
 MAX_INTEGER = 2**63 - 1
 MISSING_ID = "0" * 32
+MANY = 10_001  # more than any page size a store might quietly fall back to
 
 
 def test_get_of_an_unknown_id_returns_none(notes: Collection) -> None:
@@ -32,6 +33,15 @@ def test_list_returns_every_record_in_the_order_added(notes: Collection) -> None
 
     # Act / Assert
     assert notes.list() == [first, *batch, last]
+
+
+def test_list_has_no_hidden_limit(notes: Collection) -> None:
+    # Arrange
+    records = notes.add_many(NewMemory(str(number)) for number in range(MANY))
+
+    # Act / Assert
+    assert notes.list() == records
+    assert notes.list(offset=1) == records[1:]
 
 
 def test_list_of_an_empty_collection_is_empty(notes: Collection) -> None:

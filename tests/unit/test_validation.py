@@ -1,8 +1,10 @@
 import math
+import sys
 import threading
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
 from fractions import Fraction
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
@@ -15,6 +17,7 @@ MAX_INTEGER = 2**63 - 1
 MIN_INTEGER = -(2**63)
 LONE_SURROGATE = "\ud800"
 WAIT_SECONDS = 10  # a check that never ends fails after this instead of hanging
+MAX_TIMEOUT = 2_147_483  # seconds: SQLite counts the wait in milliseconds, in a 32-bit integer
 
 
 class Color(StrEnum):
@@ -433,3 +436,89 @@ def test_memories_become_a_list_from_any_iterable() -> None:
 def test_memories_reject_anything_but_new_memories(value: object) -> None:
     with pytest.raises(ValidationError, match="memories"):
         validate.memories(value)
+
+
+# path ----------------------------------------------------------------------------------------
+
+
+class BytesPath:
+    """A path object that gives bytes."""
+
+    def __fspath__(self) -> bytes:
+        return b"memory.db"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("memory.db", "memory.db", id="str"),
+        pytest.param(
+            Path("folder", "пам'ять 🙂.db"), str(Path("folder", "пам'ять 🙂.db")), id="path"
+        ),
+        pytest.param(":memory:", ":memory:", id="in-memory"),
+        pytest.param(Color.RED, "red", id="str-subclass"),
+    ],
+)
+def test_path_accepts_a_string_or_a_path_object(value: object, expected: str) -> None:
+    # Act
+    result = validate.path(value)
+
+    # Assert
+    assert result == expected
+    assert type(result) is str
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("", id="empty"),  # SQLite would make a temporary database, lost on close
+        pytest.param("memory\x00.db", id="nul"),
+        pytest.param(
+            "\ud800.db",
+            id="lone-surrogate",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows file names may hold lone surrogates"
+            ),
+        ),
+        pytest.param(b"memory.db", id="bytes"),
+        pytest.param(BytesPath(), id="path-object-giving-bytes"),
+        pytest.param(None, id="none"),
+        pytest.param(1, id="number"),
+    ],
+)
+def test_path_rejects_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="path"):
+        validate.path(value)
+
+
+# timeout -------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, 0.0),
+        (-0.0, 0.0),
+        (0.5, 0.5),
+        (5, 5.0),
+        (Fraction(1, 4), 0.25),
+        (MAX_TIMEOUT, MAX_TIMEOUT),
+    ],
+)
+def test_timeout_accepts_seconds_and_returns_a_float(value: object, expected: float) -> None:
+    # Act
+    result = validate.timeout(value)
+
+    # Assert
+    assert result == expected
+    assert type(result) is float
+    assert math.copysign(1, result) == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [-0.001, -1, MAX_TIMEOUT + 0.001, math.nan, math.inf, True, "5", None, 10**400],
+)
+def test_timeout_rejects_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="timeout"):
+        validate.timeout(value)

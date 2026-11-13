@@ -1,5 +1,6 @@
 """The memory engine: the owner of a storage and the way into its collections."""
 
+import os
 from datetime import UTC, datetime
 from typing import Self
 
@@ -7,6 +8,7 @@ from pybodn import _validation as validate
 from pybodn._collection import Clock, Collection
 from pybodn._storage.base import Store, ensure_open
 from pybodn._storage.memory import InMemoryStore
+from pybodn._storage.sqlite import SQLiteStore
 
 
 def _utc_now() -> datetime:
@@ -14,7 +16,8 @@ def _utc_now() -> datetime:
 
 
 class MemoryEngine:
-    """Stores memories. Create it with ``MemoryEngine.in_memory()`` and use it in ``with``.
+    """Stores memories. Create it with ``MemoryEngine.sqlite(path)`` or
+    ``MemoryEngine.in_memory()``, and use it in ``with``.
 
     The engine owns its storage: ``close()`` closes it, and any use after that raises
     ``EngineClosedError``.
@@ -23,9 +26,21 @@ class MemoryEngine:
     __slots__ = ("_clock", "_store")
 
     def __init__(self, store: Store, *, clock: Clock = _utc_now) -> None:
-        """Internal: use a factory such as ``MemoryEngine.in_memory()``."""
+        """Internal: use ``MemoryEngine.sqlite()`` or ``MemoryEngine.in_memory()``."""
         self._store = store
         self._clock = clock
+
+    @classmethod
+    def sqlite(cls, path: str | os.PathLike[str], *, timeout: float = 5.0) -> Self:
+        """An engine that keeps records in the SQLite file at ``path``, made if missing.
+
+        While another process writes to the file, a write waits up to ``timeout`` seconds,
+        then raises ``StorageError``. ``":memory:"`` keeps records in memory until the
+        engine is closed.
+        """
+        checked_path = validate.path(path)
+        checked_timeout = validate.timeout(timeout)
+        return cls(SQLiteStore(checked_path, timeout=checked_timeout))
 
     @classmethod
     def in_memory(cls) -> Self:
