@@ -17,6 +17,10 @@ _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
 # one machine could fail to load on another. A fixed limit behaves the same everywhere.
 _MAX_DEPTH = 100
 
+# The same list placed inside itself twice, again and again, looks tiny but writes out
+# as billions of values. Counting values as written out keeps such input from hanging.
+_MAX_VALUES = 1_000_000
+
 
 def text(name: str, value: object) -> str:
     """A non-empty string: ``namespace``, ``content``, a key, a tag or an id."""
@@ -47,13 +51,16 @@ def importance(value: object) -> float:
 def metadata(value: object) -> dict[str, JSONValue]:
     """A deep copy: JSON values under string keys, at most 100 levels deep.
 
+    At most 1,000,000 values in all, counting the mapping itself and every list
+    and dict as one value each.
+
     Non-string keys and tuples are rejected rather than converted, because JSON
     would silently turn ``{1: ...}`` into ``{"1": ...}`` and a tuple into a list.
     """
     if not isinstance(value, Mapping):
         raise ValidationError(f"metadata must be a mapping, not {type(value).__name__}")
     original = dict(value)
-    _check_nesting(original, levels_left=_MAX_DEPTH)
+    _check_nesting(original, levels_left=_MAX_DEPTH, values_left=_MAX_VALUES)
     try:
         encoded = json.dumps(original, ensure_ascii=False, allow_nan=False)
         encoded.encode("utf-8")  # lone surrogates cannot be stored
@@ -120,22 +127,27 @@ def _as_float(value: object) -> float | None:
         return None
 
 
-def _check_nesting(value: object, *, levels_left: int) -> None:
-    """Allow dicts with string keys and lists, at most ``levels_left`` levels deep.
+def _check_nesting(value: object, *, levels_left: int, values_left: int) -> int:
+    """Allow dicts with string keys and lists, at most ``levels_left`` levels deep and
+    ``values_left`` values in all. Return how many values ``value`` holds, itself included.
 
     A structure that contains itself is infinitely deep, so it is rejected too.
     """
+    if values_left == 0:
+        raise ValidationError(f"metadata must not hold more than {_MAX_VALUES:,} values")
     if isinstance(value, tuple):
         raise ValidationError("metadata must use lists, not tuples")
     if not isinstance(value, dict | list):
-        return  # a leaf: json.dumps rejects anything that is not a JSON value
+        return 1  # a leaf: json.dumps rejects anything that is not a JSON value
     if levels_left == 0:
         raise ValidationError(f"metadata must not be nested more than {_MAX_DEPTH} levels deep")
     if isinstance(value, dict) and not all(isinstance(key, str) for key in value):
         raise ValidationError("metadata keys must be strings")
     children = value.values() if isinstance(value, dict) else value
+    held = 1
     for child in children:
-        _check_nesting(child, levels_left=levels_left - 1)
+        held += _check_nesting(child, levels_left=levels_left - 1, values_left=values_left - held)
+    return held
 
 
 def _integer(name: str, value: object, *, minimum: int) -> int:

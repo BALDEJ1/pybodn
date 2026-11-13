@@ -156,6 +156,35 @@ def test_metadata_allows_100_levels_of_nesting() -> None:
     assert validate.metadata(nested(100)) == nested(100)
 
 
+def test_metadata_allows_values_up_to_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    monkeypatch.setattr(validate, "_MAX_VALUES", 5)
+    value = {"list": [1, 2, 3]}  # the dict, the list and three numbers
+
+    # Act / Assert
+    assert validate.metadata(value) == value
+
+
+def test_metadata_rejects_one_value_over_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    monkeypatch.setattr(validate, "_MAX_VALUES", 5)
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="metadata must not hold more than 5 values"):
+        validate.metadata({"list": [1, 2, 3, 4]})
+
+
+def test_metadata_that_reuses_one_list_over_and_over_is_rejected() -> None:
+    # Arrange: small in memory, but over a billion values once written out in full
+    value: list[object] = []
+    for _ in range(30):
+        value = [value, value]
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="1,000,000 values"):
+        validate.metadata({"value": value})
+
+
 def test_metadata_turns_str_subclasses_into_plain_strs() -> None:
     # Act
     result = validate.metadata({"color": Color.RED})
