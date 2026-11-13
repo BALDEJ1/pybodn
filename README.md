@@ -39,6 +39,7 @@ Keys can be any hashable value, for example a `(namespace, key)` tuple.
 
 ```bash
 uv sync
+uv run prek install    # secret and workflow checks before each commit
 uv run ruff check
 uv run ruff format --check
 uv run mypy
