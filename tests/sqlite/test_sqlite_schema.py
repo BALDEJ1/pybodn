@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from pybodn import MemoryEngine
-from pybodn._storage import schema
+from pybodn._storage import schema, sqlite
 from pybodn.errors import StorageError
 from tests.sqlite.support import THREADS, WAIT_SECONDS, run_sql
 
@@ -239,5 +239,23 @@ def test_a_failed_migration_closes_its_connection(
 
     # Act / Assert
     with pytest.raises(StorageError):
+        MemoryEngine.sqlite(path)
+    assert_closed(opened)
+
+
+def test_an_interrupted_open_closes_its_connection(
+    path: Path,
+    remember_connections: Callable[[], list[sqlite3.Connection]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange
+    def interrupt(*args: object) -> None:
+        raise KeyboardInterrupt  # as Ctrl-C would, while the file is being opened
+
+    monkeypatch.setattr(sqlite, "_use_write_ahead_log", interrupt)
+    opened = remember_connections()
+
+    # Act / Assert
+    with pytest.raises(KeyboardInterrupt):
         MemoryEngine.sqlite(path)
     assert_closed(opened)

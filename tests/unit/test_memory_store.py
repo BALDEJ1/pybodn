@@ -63,6 +63,18 @@ def test_deleting_the_last_record_of_a_namespace_releases_the_namespace() -> Non
     assert store._namespaces == {}
 
 
+def test_deleting_a_record_releases_its_key() -> None:
+    # Arrange
+    store = InMemoryStore()
+    store.insert([record("a", key="language"), record("b")])
+
+    # Act
+    store.delete("user:123", "a")
+
+    # Assert
+    assert store._namespaces["user:123"].ids_by_key == {}
+
+
 def test_close_releases_every_record() -> None:
     # Arrange
     store = InMemoryStore()
