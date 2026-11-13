@@ -22,9 +22,10 @@ def circular() -> dict[str, object]:
     return value
 
 
-def nested(depth: int) -> dict[str, object]:
+def nested(levels: int) -> dict[str, object]:
+    """A dict holding lists, ``levels`` containers deep in total."""
     value: object = "leaf"
-    for _ in range(depth):
+    for _ in range(levels - 1):
         value = [value]
     return {"deep": value}
 
@@ -150,6 +151,10 @@ def test_metadata_keeps_the_key_order() -> None:
     assert list(validate.metadata({"b": 1, "a": 2})) == ["b", "a"]
 
 
+def test_metadata_allows_100_levels_of_nesting() -> None:
+    assert validate.metadata(nested(100)) == nested(100)
+
+
 def test_metadata_turns_str_subclasses_into_plain_strs() -> None:
     # Act
     result = validate.metadata({"color": Color.RED})
@@ -175,7 +180,7 @@ def test_metadata_turns_str_subclasses_into_plain_strs() -> None:
         pytest.param({"value": LONE_SURROGATE}, id="lone-surrogate-value"),
         pytest.param({LONE_SURROGATE: "value"}, id="lone-surrogate-key"),
         pytest.param(circular(), id="circular"),
-        pytest.param(nested(100_000), id="too-deep"),
+        pytest.param(nested(101), id="101-levels"),
     ],
 )
 def test_metadata_rejects_anything_but_json_with_string_keys(value: object) -> None:

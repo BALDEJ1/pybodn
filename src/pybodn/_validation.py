@@ -13,6 +13,10 @@ from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
 
+# How deep Python itself can nest depends on the platform's stack, so data written on
+# one machine could fail to load on another. A fixed limit behaves the same everywhere.
+_MAX_DEPTH = 100
+
 
 def text(name: str, value: object) -> str:
     """A non-empty string: ``namespace``, ``content``, a key, a tag or an id."""
@@ -41,23 +45,21 @@ def importance(value: object) -> float:
 
 
 def metadata(value: object) -> dict[str, JSONValue]:
-    """A deep copy that survives a JSON round trip unchanged.
+    """A deep copy: JSON values under string keys, at most 100 levels deep.
 
-    Unchanged means string keys only and lists rather than tuples: JSON would
-    silently turn ``{1: ...}`` into ``{"1": ...}`` and a tuple into a list.
+    Non-string keys and tuples are rejected rather than converted, because JSON
+    would silently turn ``{1: ...}`` into ``{"1": ...}`` and a tuple into a list.
     """
     if not isinstance(value, Mapping):
         raise ValidationError(f"metadata must be a mapping, not {type(value).__name__}")
     original = dict(value)
+    _check_nesting(original, levels_left=_MAX_DEPTH)
     try:
         encoded = json.dumps(original, ensure_ascii=False, allow_nan=False)
         encoded.encode("utf-8")  # lone surrogates cannot be stored
-        copy: dict[str, JSONValue] = json.loads(encoded)
-        is_unchanged = copy == original
-    except (TypeError, ValueError, RecursionError) as error:
+    except (TypeError, ValueError) as error:
         raise ValidationError(f"metadata must contain only JSON values: {error}") from error
-    if not is_unchanged:
-        raise ValidationError("metadata must have only string keys and no tuples")
+    copy: dict[str, JSONValue] = json.loads(encoded)
     return copy
 
 
@@ -98,6 +100,24 @@ def _as_float(value: object) -> float | None:
         return float(value)
     except OverflowError:  # an integer too large for a float
         return None
+
+
+def _check_nesting(value: object, *, levels_left: int) -> None:
+    """Allow dicts with string keys and lists, at most ``levels_left`` levels deep.
+
+    A structure that contains itself is infinitely deep, so it is rejected too.
+    """
+    if isinstance(value, tuple):
+        raise ValidationError("metadata must use lists, not tuples")
+    if not isinstance(value, dict | list):
+        return  # a leaf: json.dumps rejects anything that is not a JSON value
+    if levels_left == 0:
+        raise ValidationError(f"metadata must not be nested more than {_MAX_DEPTH} levels deep")
+    if isinstance(value, dict) and not all(isinstance(key, str) for key in value):
+        raise ValidationError("metadata keys must be strings")
+    children = value.values() if isinstance(value, dict) else value
+    for child in children:
+        _check_nesting(child, levels_left=levels_left - 1)
 
 
 def _integer(name: str, value: object, *, minimum: int) -> int:
