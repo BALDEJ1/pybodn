@@ -51,6 +51,7 @@ files = ["src", "tests"]
 minversion = "9.0"
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 source_pkgs = ["pybodn"]
