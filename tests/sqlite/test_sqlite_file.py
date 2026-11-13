@@ -247,3 +247,36 @@ def test_adding_nothing_does_not_wait_for_another_connection(path: Path) -> None
             assert notes.add_many([]) == []
         finally:
             other.execute("ROLLBACK")
+
+
+# Each one damages the record so that it no longer reads back, as another program could.
+DAMAGE = {
+    "metadata": "UPDATE memories SET metadata_json = '{not json'",
+    "tags": "UPDATE memories SET tags_json = '5'",
+    "time": "UPDATE memories SET created_at = 'yesterday'",
+}
+
+READS: dict[str, Callable[[Collection, str], object]] = {
+    "get": lambda notes, record_id: notes.get(record_id),
+    "get_by_key": lambda notes, _: notes.get_by_key("language"),
+    "list": lambda notes, _: notes.list(),
+    "update": lambda notes, record_id: notes.update(record_id, content="Prefers Rust"),
+}
+
+
+@pytest.mark.parametrize("damage", DAMAGE.values(), ids=DAMAGE.keys())
+@pytest.mark.parametrize("read", READS.values(), ids=READS.keys())
+def test_a_damaged_record_is_a_storage_error(
+    path: Path, run_sql: RunSQL, damage: str, read: Callable[[Collection, str], object]
+) -> None:
+    with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
+        # Arrange
+        notes = engine.collection("user:123")
+        record = notes.add("Prefers Python", key="language")
+        run_sql(damage)
+
+        # Act / Assert
+        with pytest.raises(StorageError, match="damaged") as caught:
+            read(notes, record.id)
+        assert isinstance(caught.value.__cause__, TypeError | ValueError)
+        notes.add("Likes tea")  # nothing was left half done

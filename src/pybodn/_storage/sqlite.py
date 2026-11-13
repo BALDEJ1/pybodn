@@ -4,6 +4,7 @@ import builtins
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -39,6 +40,7 @@ _REPLACE = (
 )
 _DELETE = "DELETE FROM memories WHERE namespace = ? AND id = ?"
 _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
+_PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
 
 
 class SQLiteStore:
@@ -67,9 +69,8 @@ class SQLiteStore:
             with _storage_errors():
                 with _transaction(self._connection):  # two processes never migrate at once
                     _migrate(self._connection)
-                # Readers then never block the writer, and a commit survives a power cut.
-                self._connection.execute("PRAGMA journal_mode = WAL").fetchall()
-                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
+                _use_write_ahead_log(self._connection, timeout)
+                self._connection.execute("PRAGMA synchronous = FULL").fetchall()  # power cuts
         except BaseException:
             self._connection.close()
             raise
@@ -192,6 +193,25 @@ def _migrate(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA application_id = {schema.APPLICATION_ID}")
 
 
+def _use_write_ahead_log(connection: sqlite3.Connection, timeout: float) -> None:
+    """Switch the file to the write-ahead log, so that readers never block the writer.
+
+    The switch needs the file to itself. While another connection writes, SQLite refuses at
+    once instead of waiting, because waiting there could deadlock; so wait here, in steps,
+    up to ``timeout``. Once the file uses the log, the switch has nothing to do.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode = WAL").fetchall()
+        except sqlite3.OperationalError as error:
+            if error.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                raise
+            time.sleep(_PAUSE)
+        else:
+            return
+
+
 def _single(connection: sqlite3.Connection, sql: str, parameters: tuple[str, ...] = ()) -> Any:
     """The one value the query returns."""
     ((value,),) = connection.execute(sql, parameters).fetchall()
@@ -231,33 +251,28 @@ def _replacement(record: MemoryRecord) -> tuple[object, ...]:
 
 
 def _record(row: tuple[Any, ...]) -> MemoryRecord:
-    """A row of ``_SELECT_BY`` or ``_SELECT_PAGE`` as a record."""
-    (
-        record_id,
-        namespace,
-        key,
-        content,
-        metadata,
-        tags,
-        importance,
-        source,
-        created,
-        updated,
-        version,
-    ) = row
-    return MemoryRecord(
-        id=record_id,
-        namespace=namespace,
-        content=content,
-        key=key,
-        metadata=json.loads(metadata),
-        tags=tuple(json.loads(tags)),
-        importance=importance,
-        source=source,
-        created_at=_read_time(created),
-        updated_at=_read_time(updated),
-        version=version,
-    )
+    """A row of ``_SELECT_BY`` or ``_SELECT_PAGE`` as a record.
+
+    A row another program damaged, so that it no longer reads back, raises ``StorageError``.
+    """
+    record_id, namespace, key, content, metadata, tags, importance, source = row[:8]
+    created, updated, version = row[8:]
+    try:
+        return MemoryRecord(
+            id=record_id,
+            namespace=namespace,
+            content=content,
+            key=key,
+            metadata=json.loads(metadata),
+            tags=tuple(json.loads(tags)),
+            importance=importance,
+            source=source,
+            created_at=_read_time(created),
+            updated_at=_read_time(updated),
+            version=version,
+        )
+    except (TypeError, ValueError) as error:
+        raise StorageError(f"record {record_id!r} in the database is damaged: {error}") from error
 
 
 def _json(value: object) -> str:
