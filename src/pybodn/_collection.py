@@ -64,6 +64,7 @@ class Collection:
     def add(self, content: str, **fields: Unpack[NewMemoryFields]) -> MemoryRecord:
         """Add a record. The same as ``add_many([NewMemory(content, ...)])[0]``."""
         ensure_open(self._store)
+        _reject_unknown("add", fields, NewMemoryFields.__optional_keys__)
         return self.add_many([NewMemory(content, **fields)])[0]
 
     def add_many(self, memories: Iterable[NewMemory]) -> builtins.list[MemoryRecord]:
@@ -84,6 +85,7 @@ class Collection:
         time and place in ``list()``.
         """
         ensure_open(self._store)
+        _reject_unknown("put", fields, MemoryFields.__optional_keys__)
         checked_key = validate.text("key", key)
         make = _prepare(self._namespace, NewMemory(content, key=checked_key, **fields))
 
@@ -169,10 +171,15 @@ def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:
     )
 
 
-def _check_changes(changes: Mapping[str, object]) -> _CheckedChanges:
-    unknown = sorted(changes.keys() - MemoryChanges.__optional_keys__)
+def _reject_unknown(method: str, fields: Mapping[str, object], known: frozenset[str]) -> None:
+    """Raise the ``TypeError`` Python raises for a keyword a function does not take."""
+    unknown = sorted(fields.keys() - known)
     if unknown:
-        raise TypeError(f"update() got an unexpected keyword argument {unknown[0]!r}")
+        raise TypeError(f"{method}() got an unexpected keyword argument {unknown[0]!r}")
+
+
+def _check_changes(changes: Mapping[str, object]) -> _CheckedChanges:
+    _reject_unknown("update", changes, MemoryChanges.__optional_keys__)
     if not changes:
         raise ValidationError("update needs at least one field to change")
     checked: _CheckedChanges = {}

@@ -1,6 +1,7 @@
 """Every operation checks its input, and a rejected write changes nothing."""
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -180,3 +181,19 @@ def test_bad_limit_is_rejected(notes: Collection, limit: Any) -> None:
 def test_bad_offset_is_rejected(notes: Collection, offset: Any) -> None:
     with pytest.raises(ValidationError, match="offset"):
         notes.list(offset=offset)
+
+
+# Like any Python function, a misspelled keyword is a TypeError that names the method called.
+UNKNOWN_FIELD: dict[str, Callable[[Collection], object]] = {
+    "add": lambda notes: notes.add("Python", colour="red"),  # type: ignore[call-arg]
+    "put": lambda notes: notes.put("language", "Python", colour="red"),  # type: ignore[call-arg]
+    "update": lambda notes: notes.update(notes.add("Python").id, colour="red"),  # type: ignore[call-arg]
+}
+
+
+@pytest.mark.parametrize("method", UNKNOWN_FIELD)
+def test_an_unknown_field_is_a_type_error_naming_the_method(notes: Collection, method: str) -> None:
+    with pytest.raises(
+        TypeError, match=rf"^{method}\(\) got an unexpected keyword argument 'colour'$"
+    ):
+        UNKNOWN_FIELD[method](notes)

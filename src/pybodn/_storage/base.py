@@ -3,7 +3,7 @@
 A store makes no decisions: it only reads and writes, atomically. Checks, ids, times,
 versions and what ``put`` and ``update`` mean live above it, once for every store.
 
-Errors: pybodn errors, including those raised by ``build``, pass through unchanged. A
+Errors: whatever ``build`` raises, and any pybodn error, passes through unchanged. A
 failure of the storage itself becomes ``StorageError`` with the original as its cause.
 Any call after ``close()`` raises ``EngineClosedError``.
 """

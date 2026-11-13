@@ -16,13 +16,15 @@ STORES: dict[str, Callable[[Path], Store]] = {
     "memory": lambda _: InMemoryStore(),
 }
 
-START = datetime(2026, 11, 13, 9, 55, tzinfo=UTC)
+START = datetime(2026, 11, 13, 9, 55, 0, 123456, tzinfo=UTC)
+TICK = timedelta(seconds=1, microseconds=1)
 
 
 class TickingClock:
-    """Every reading is one second after the previous one.
+    """Every reading is a second and a microsecond after the previous one.
 
-    A frozen clock would hide a record whose two times come from two readings.
+    A frozen clock would hide a record whose two times come from two readings, and
+    whole seconds would hide a store that drops microseconds.
     """
 
     def __init__(self) -> None:
@@ -32,7 +34,7 @@ class TickingClock:
     def __call__(self) -> datetime:
         with self._lock:
             now = self._next
-            self._next = now + timedelta(seconds=1)
+            self._next = now + TICK
         return now
 
 

@@ -1,7 +1,10 @@
+import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from pybodn import Collection, MemoryEngine
 from pybodn.errors import EngineClosedError
@@ -9,6 +12,16 @@ from pybodn.errors import EngineClosedError
 THREADS = 8
 CALLS = 50
 WAIT_SECONDS = 10  # a stuck test fails after this instead of hanging
+SWITCH_SECONDS = 1e-6
+
+
+@pytest.fixture(autouse=True)
+def frequent_thread_switches() -> Iterator[None]:
+    """Switch threads as often as Python allows, so a missing lock shows in every run."""
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(SWITCH_SECONDS)
+    yield
+    sys.setswitchinterval(previous)
 
 
 def run_together(work: Callable[[], object]) -> None:
