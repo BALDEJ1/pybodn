@@ -11,7 +11,12 @@ from uuid import uuid4
 from pybodn import _validation as validate
 from pybodn._models import JSONValue, MemoryRecord, NewMemory
 from pybodn._storage.base import Store, ensure_open
-from pybodn.errors import ConcurrentUpdateError, RecordNotFoundError, ValidationError
+from pybodn.errors import (
+    ConcurrentUpdateError,
+    DuplicateKeyError,
+    RecordNotFoundError,
+    ValidationError,
+)
 
 type Clock = Callable[[], datetime]
 
@@ -75,6 +80,7 @@ class Collection:
         records = [
             make(id=uuid4().hex, created_at=now, updated_at=now, version=1) for make in makers
         ]
+        _reject_repeated_keys(records)
         self._store.insert(records)
         return records
 
@@ -169,6 +175,16 @@ def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:
         importance=validate.importance(memory.importance),
         source=validate.source(memory.source),
     )
+
+
+def _reject_repeated_keys(records: Iterable[MemoryRecord]) -> None:
+    """Raise ``DuplicateKeyError`` if two records of one batch share a key."""
+    seen: set[str] = set()
+    for record in records:
+        if record.key in seen:
+            raise DuplicateKeyError(f"key {record.key!r} is repeated within the batch")
+        if record.key is not None:
+            seen.add(record.key)
 
 
 def _reject_unknown(method: str, fields: Mapping[str, object], known: frozenset[str]) -> None:

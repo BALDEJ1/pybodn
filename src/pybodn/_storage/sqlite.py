@@ -12,43 +12,50 @@ from typing import Any
 
 from pybodn._models import MemoryRecord
 from pybodn._storage import schema
-from pybodn._storage.base import Build, Lookup, ensure_open
-from pybodn.errors import DuplicateKeyError, StorageError
+from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
+from pybodn.errors import StorageError
 
-# Every query is written out in full: no value and no column name is ever pasted into one.
+# The columns of a record; seq, the order of insertion, SQLite fills in itself. Every query
+# is built from this list once, here: no value or outside text is ever pasted into one.
+_COLUMNS = (
+    "id",
+    "namespace",
+    "memory_key",
+    "content",
+    "metadata_json",
+    "tags_json",
+    "importance",
+    "source",
+    "created_at",
+    "updated_at",
+    "version",
+)
+_SELECT = f"SELECT {', '.join(_COLUMNS)} FROM memories WHERE namespace = ?"  # noqa: S608
 _SELECT_BY: dict[Lookup, str] = {
-    "id": "SELECT id, namespace, memory_key, content, metadata_json, tags_json, importance,"
-    " source, created_at, updated_at, version FROM memories WHERE namespace = ? AND id = ?",
-    "key": "SELECT id, namespace, memory_key, content, metadata_json, tags_json, importance,"
-    " source, created_at, updated_at, version FROM memories"
-    " WHERE namespace = ? AND memory_key = ?",
+    "id": f"{_SELECT} AND id = ?",
+    "key": f"{_SELECT} AND memory_key = ?",
 }
-_SELECT_PAGE = (
-    "SELECT id, namespace, memory_key, content, metadata_json, tags_json, importance, source,"
-    " created_at, updated_at, version FROM memories WHERE namespace = ?"
-    " ORDER BY seq LIMIT ? OFFSET ?"
+_SELECT_PAGE = f"{_SELECT} ORDER BY seq LIMIT ? OFFSET ?"
+_INSERT = (
+    f"INSERT INTO memories ({', '.join(_COLUMNS)})"  # noqa: S608
+    f" VALUES ({', '.join(f':{column}' for column in _COLUMNS)})"
+)
+_REPLACE = (
+    f"UPDATE memories SET {', '.join(f'{column} = :{column}' for column in _COLUMNS)}"  # noqa: S608
+    " WHERE id = :current_id"
 )
 _COUNT = "SELECT count(*) FROM memories WHERE namespace = ?"
 _KEY_USED = "SELECT 1 FROM memories WHERE namespace = ? AND memory_key = ?"
-_INSERT = (
-    "INSERT INTO memories (id, namespace, memory_key, content, metadata_json, tags_json,"
-    " importance, source, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-)
-_REPLACE = (
-    "UPDATE memories SET content = ?, metadata_json = ?, tags_json = ?, importance = ?,"
-    " source = ?, created_at = ?, updated_at = ?, version = ? WHERE id = ?"
-)
 _DELETE = "DELETE FROM memories WHERE namespace = ? AND id = ?"
 _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
 _PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
 
 
 class SQLiteStore:
-    """Records in an SQLite file, through one connection behind one lock, so threads can share it.
+    """Records in an SQLite file, through one connection behind one lock.
 
-    Every change is one transaction that takes the file's write lock first, so a change from
-    another process waits its turn, up to ``timeout`` seconds. Reads open no transaction of
-    their own, so they always see the latest committed change, whoever made it.
+    Every change takes the file's write lock first, so another process's change waits its
+    turn, up to ``timeout`` seconds. Reads see every committed change at once.
     """
 
     __slots__ = ("_closed", "_connection", "_lock")
@@ -56,8 +63,8 @@ class SQLiteStore:
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
 
-        A file that is not pybodn's, or was written by a newer pybodn, raises ``StorageError``
-        and is left as it was.
+        A file that is not pybodn's, or is from a newer pybodn, raises ``StorageError`` and is
+        left as it was.
         """
         self._lock = threading.Lock()
         self._closed = False
@@ -65,12 +72,14 @@ class SQLiteStore:
             self._connection = sqlite3.connect(
                 path, timeout=timeout, autocommit=True, check_same_thread=False
             )
+        self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
                 with _transaction(self._connection):  # two processes never migrate at once
                     _migrate(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
-                self._connection.execute("PRAGMA synchronous = FULL").fetchall()  # power cuts
+                # Each commit is flushed to disk before the call returns.
+                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
         except BaseException:
             self._connection.close()
             raise
@@ -83,8 +92,7 @@ class SQLiteStore:
         with self._lock:
             ensure_open(self)
             with _storage_errors():
-                rows = self._connection.execute(_SELECT_BY[by], (namespace, value)).fetchall()
-        return _record(rows[0]) if rows else None
+                return self._find(namespace, by, value)
 
     def insert(self, records: Sequence[MemoryRecord]) -> None:
         rows = [_row(record) for record in records]
@@ -93,29 +101,19 @@ class SQLiteStore:
             if not rows:
                 return
             with _storage_errors(), _transaction(self._connection):
-                used: set[tuple[str, str]] = set()
-                for record in records:
-                    if record.key is None:
-                        continue
-                    slot = (record.namespace, record.key)
-                    if slot in used or self._connection.execute(_KEY_USED, slot).fetchall():
-                        raise DuplicateKeyError(
-                            f"key {record.key!r} is already used in namespace {record.namespace!r}"
-                        )
-                    used.add(slot)
+                reject_stored_keys(records, self._is_key_stored)
                 self._connection.executemany(_INSERT, rows)
 
     def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
         with self._lock:
             ensure_open(self)
             with _storage_errors(), _transaction(self._connection):
-                rows = self._connection.execute(_SELECT_BY[by], (namespace, value)).fetchall()
-                current = _record(rows[0]) if rows else None
+                current = self._find(namespace, by, value)
                 record = build(current)
                 if current is None:
                     self._connection.execute(_INSERT, _row(record))
                 else:
-                    self._connection.execute(_REPLACE, _replacement(record))
+                    self._connection.execute(_REPLACE, {**_row(record), "current_id": current.id})
         return record
 
     def delete(self, namespace: str, id: str) -> bool:
@@ -133,7 +131,7 @@ class SQLiteStore:
             ensure_open(self)
             with _storage_errors():
                 rows = self._connection.execute(_SELECT_PAGE, page).fetchall()
-        return [_record(row) for row in rows]
+                return [_record(row) for row in rows]
 
     def count(self, namespace: str) -> int:
         with self._lock:
@@ -147,6 +145,13 @@ class SQLiteStore:
             self._closed = True
             with _storage_errors():
                 self._connection.close()  # closing again does nothing
+
+    def _find(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
+        rows = self._connection.execute(_SELECT_BY[by], (namespace, value)).fetchall()
+        return _record(rows[0]) if rows else None
+
+    def _is_key_stored(self, namespace: str, key: str) -> bool:
+        return bool(self._connection.execute(_KEY_USED, (namespace, key)).fetchall())
 
 
 @contextmanager
@@ -196,9 +201,8 @@ def _migrate(connection: sqlite3.Connection) -> None:
 def _use_write_ahead_log(connection: sqlite3.Connection, timeout: float) -> None:
     """Switch the file to the write-ahead log, so that readers never block the writer.
 
-    The switch needs the file to itself. While another connection writes, SQLite refuses at
-    once instead of waiting, because waiting there could deadlock; so wait here, in steps,
-    up to ``timeout``. Once the file uses the log, the switch has nothing to do.
+    While another connection writes, SQLite refuses the switch at once rather than risk a
+    deadlock, so retry here, up to ``timeout``.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -218,61 +222,41 @@ def _single(connection: sqlite3.Connection, sql: str, parameters: tuple[str, ...
     return value
 
 
-def _row(record: MemoryRecord) -> tuple[object, ...]:
-    """``record`` as the values of ``_INSERT``."""
-    return (
-        record.id,
-        record.namespace,
-        record.key,
-        record.content,
-        _json(record.metadata),
-        _json(builtins.list(record.tags)),
-        record.importance,
-        record.source,
-        _write_time(record.created_at),
-        _write_time(record.updated_at),
-        record.version,
-    )
+def _row(record: MemoryRecord) -> dict[str, object]:
+    """``record`` as the value of each column."""
+    return {
+        "id": record.id,
+        "namespace": record.namespace,
+        "memory_key": record.key,
+        "content": record.content,
+        "metadata_json": _json(record.metadata),
+        "tags_json": _json(record.tags),
+        "importance": record.importance,
+        "source": record.source,
+        "created_at": _write_time(record.created_at),
+        "updated_at": _write_time(record.updated_at),
+        "version": record.version,
+    }
 
 
-def _replacement(record: MemoryRecord) -> tuple[object, ...]:
-    """``record`` as the values of ``_REPLACE``: everything but its id, namespace and key."""
-    return (
-        record.content,
-        _json(record.metadata),
-        _json(builtins.list(record.tags)),
-        record.importance,
-        record.source,
-        _write_time(record.created_at),
-        _write_time(record.updated_at),
-        record.version,
-        record.id,
-    )
-
-
-def _record(row: tuple[Any, ...]) -> MemoryRecord:
-    """A row of ``_SELECT_BY`` or ``_SELECT_PAGE`` as a record.
-
-    A row another program damaged, so that it no longer reads back, raises ``StorageError``.
-    """
-    record_id, namespace, key, content, metadata, tags, importance, source = row[:8]
-    created, updated, version = row[8:]
+def _record(row: sqlite3.Row) -> MemoryRecord:
+    """A row of the table as a record. A row that no longer reads back raises ``StorageError``."""
     try:
         return MemoryRecord(
-            id=record_id,
-            namespace=namespace,
-            content=content,
-            key=key,
-            metadata=json.loads(metadata),
-            tags=tuple(json.loads(tags)),
-            importance=importance,
-            source=source,
-            created_at=_read_time(created),
-            updated_at=_read_time(updated),
-            version=version,
+            id=row["id"],
+            namespace=row["namespace"],
+            content=row["content"],
+            key=row["memory_key"],
+            metadata=json.loads(row["metadata_json"]),
+            tags=tuple(json.loads(row["tags_json"])),
+            importance=row["importance"],
+            source=row["source"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+            version=row["version"],
         )
-    except (TypeError, ValueError) as error:
-        raise StorageError(f"record {record_id!r} in the database is damaged: {error}") from error
+    except (TypeError, ValueError, RecursionError) as error:
+        raise StorageError(f"record {row['id']!r} in the database is damaged: {error}") from error
 
 
 def _json(value: object) -> str:
@@ -283,7 +267,3 @@ def _json(value: object) -> str:
 def _write_time(moment: datetime) -> str:
     """UTC as text of one width, microseconds always written, so text order is time order."""
     return moment.astimezone(UTC).isoformat(timespec="microseconds")
-
-
-def _read_time(text: str) -> datetime:
-    return datetime.fromisoformat(text)

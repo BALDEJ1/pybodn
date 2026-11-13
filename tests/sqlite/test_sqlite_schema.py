@@ -5,7 +5,6 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +13,7 @@ import pytest
 from pybodn import MemoryEngine
 from pybodn._storage import schema
 from pybodn.errors import StorageError
-
-type RunSQL = Callable[[str], list[tuple[object, ...]]]
-
-THREADS = 8
-WAIT_SECONDS = 10
+from tests.sqlite.support import THREADS, WAIT_SECONDS, run_sql
 
 
 def make_pybodn_file(path: Path) -> None:
@@ -26,50 +21,42 @@ def make_pybodn_file(path: Path) -> None:
         engine.collection("user:123").add("Prefers Python")
 
 
-def make_database(path: Path, sql: str) -> None:
-    with closing(sqlite3.connect(path, autocommit=True)) as connection:
-        connection.execute(sql)
-
-
-def schema_objects(run_sql: RunSQL) -> list[tuple[object, ...]]:
-    return run_sql("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name")
+def schema_objects(path: Path) -> list[tuple[object, ...]]:
+    return run_sql(path, "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name")
 
 
 def files_in(folder: Path) -> list[str]:
     return sorted(entry.name for entry in folder.iterdir())
 
 
-def assert_is_pybodn_file(run_sql: RunSQL) -> None:
-    assert run_sql("PRAGMA application_id") == [(schema.APPLICATION_ID,)]
-    assert run_sql("PRAGMA user_version") == [(len(schema.MIGRATIONS),)]
+def assert_is_pybodn_file(path: Path) -> None:
+    assert run_sql(path, "PRAGMA application_id") == [(schema.APPLICATION_ID,)]
+    assert run_sql(path, "PRAGMA user_version") == [(len(schema.MIGRATIONS),)]
 
 
-def test_a_missing_file_is_created_as_a_pybodn_file(path: Path, run_sql: RunSQL) -> None:
-    # Act
-    with MemoryEngine.sqlite(path):
-        pass
-
-    # Assert
-    assert_is_pybodn_file(run_sql)
-
-
-def test_an_empty_file_becomes_a_pybodn_file(path: Path, run_sql: RunSQL) -> None:
+@pytest.mark.parametrize(
+    "prepare",
+    [lambda path: None, lambda path: path.write_bytes(b"")],
+    ids=["missing", "empty"],
+)
+def test_a_missing_or_empty_file_becomes_a_pybodn_file(
+    path: Path, prepare: Callable[[Path], object]
+) -> None:
     # Arrange
-    path.write_bytes(b"")
+    prepare(path)
 
     # Act
-    with MemoryEngine.sqlite(path) as engine:
-        engine.collection("user:123").add("Prefers Python")
+    make_pybodn_file(path)
 
     # Assert
-    assert_is_pybodn_file(run_sql)
+    assert_is_pybodn_file(path)
 
 
-def test_version_1_keeps_its_layout(path: Path, run_sql: RunSQL) -> None:
+def test_version_1_keeps_its_layout(path: Path) -> None:
     # Files already written have exactly this layout: change it with a new migration instead.
     make_pybodn_file(path)
 
-    columns = run_sql("SELECT name, type, \"notnull\", pk FROM pragma_table_info('memories')")
+    columns = run_sql(path, "SELECT name, type, \"notnull\", pk FROM pragma_table_info('memories')")
     assert columns == [
         ("seq", "INTEGER", 0, 1),
         ("id", "TEXT", 1, 0),
@@ -84,7 +71,9 @@ def test_version_1_keeps_its_layout(path: Path, run_sql: RunSQL) -> None:
         ("updated_at", "TEXT", 1, 0),
         ("version", "INTEGER", 1, 0),
     ]
-    indexes = run_sql("SELECT name, sql FROM sqlite_master WHERE type = 'index' ORDER BY name")
+    indexes = run_sql(
+        path, "SELECT name, sql FROM sqlite_master WHERE type = 'index' ORDER BY name"
+    )
     assert indexes == [
         (
             "ix_memories_namespace_seq",
@@ -102,9 +91,7 @@ def test_version_1_keeps_its_layout(path: Path, run_sql: RunSQL) -> None:
     ]
 
 
-def test_an_older_file_is_brought_up_to_date(
-    path: Path, run_sql: RunSQL, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_older_file_is_brought_up_to_date(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange
     with MemoryEngine.sqlite(path) as engine:
         record = engine.collection("user:123").add("Prefers Python")
@@ -116,16 +103,14 @@ def test_an_older_file_is_brought_up_to_date(
 
     # Assert
     assert stored == record
-    assert run_sql("PRAGMA user_version") == [(2,)]
-    assert run_sql("SELECT name FROM sqlite_master WHERE name = 'extra'") == [("extra",)]
+    assert run_sql(path, "PRAGMA user_version") == [(2,)]
+    assert run_sql(path, "SELECT name FROM sqlite_master WHERE name = 'extra'") == [("extra",)]
 
 
-def test_a_failed_migration_changes_nothing(
-    path: Path, run_sql: RunSQL, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_failed_migration_changes_nothing(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange
     make_pybodn_file(path)
-    before = schema_objects(run_sql)
+    before = schema_objects(path)
     monkeypatch.setattr(
         schema, "MIGRATIONS", (*schema.MIGRATIONS, ("CREATE TABLE extra (x)", "NOT SQL"))
     )
@@ -134,11 +119,11 @@ def test_a_failed_migration_changes_nothing(
     with pytest.raises(StorageError) as caught:
         MemoryEngine.sqlite(path)
     assert isinstance(caught.value.__cause__, sqlite3.Error)
-    assert run_sql("PRAGMA user_version") == [(1,)]
-    assert schema_objects(run_sql) == before
+    assert run_sql(path, "PRAGMA user_version") == [(1,)]
+    assert schema_objects(path) == before
 
 
-def test_engines_opening_a_new_file_at_once_create_it_once(path: Path, run_sql: RunSQL) -> None:
+def test_engines_opening_a_new_file_at_once_create_it_once(path: Path) -> None:
     # Arrange
     start = threading.Barrier(THREADS, timeout=WAIT_SECONDS)
 
@@ -154,8 +139,8 @@ def test_engines_opening_a_new_file_at_once_create_it_once(path: Path, run_sql: 
         future.result()
 
     # Assert
-    assert_is_pybodn_file(run_sql)
-    assert run_sql("SELECT count(*) FROM memories") == [(THREADS,)]
+    assert_is_pybodn_file(path)
+    assert run_sql(path, "SELECT count(*) FROM memories") == [(THREADS,)]
 
 
 # Each one leaves a file that is not pybodn's, or is too new for this version, at ``path``.
@@ -166,24 +151,24 @@ def text_file(path: Path) -> None:
 
 
 def database_with_a_table(path: Path) -> None:
-    make_database(path, "CREATE TABLE notes (text)")
+    run_sql(path, "CREATE TABLE notes (text)")
 
 
 def database_with_a_view(path: Path) -> None:
-    make_database(path, "CREATE VIEW answer AS SELECT 42")
+    run_sql(path, "CREATE VIEW answer AS SELECT 42")
 
 
 def database_of_another_program(path: Path) -> None:
-    make_database(path, "PRAGMA application_id = 42")
+    run_sql(path, "PRAGMA application_id = 42")
 
 
 def database_with_a_version_only(path: Path) -> None:
-    make_database(path, "PRAGMA user_version = 1")
+    run_sql(path, "PRAGMA user_version = 1")
 
 
 def pybodn_file_from_the_future(path: Path) -> None:
     make_pybodn_file(path)
-    make_database(path, f"PRAGMA user_version = {len(schema.MIGRATIONS) + 1}")
+    run_sql(path, f"PRAGMA user_version = {len(schema.MIGRATIONS) + 1}")
 
 
 REFUSED = [

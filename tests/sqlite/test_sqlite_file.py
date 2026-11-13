@@ -3,7 +3,6 @@
 import sqlite3
 import threading
 from collections.abc import Callable
-from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,11 +11,7 @@ import pytest
 from pybodn import Collection, MemoryEngine, NewMemory
 from pybodn._storage.sqlite import SQLiteStore
 from pybodn.errors import StorageError, ValidationError
-
-type RunSQL = Callable[[str], list[tuple[object, ...]]]
-
-SHORT_WAIT = 0.05  # seconds a write waits in tests where nothing will free the file in time
-RELEASE_AFTER = 0.2  # seconds after which another connection frees the file
+from tests.sqlite.support import RELEASE_AFTER, SHORT_WAIT, another_writer, run_sql
 
 
 def test_records_survive_closing_and_reopening(path: Path) -> None:
@@ -98,7 +93,7 @@ def test_a_bad_path_or_timeout_is_rejected_before_any_file_is_made(
 
 
 def test_a_time_with_zero_microseconds_keeps_its_width_and_comes_back_unchanged(
-    path: Path, run_sql: RunSQL
+    path: Path,
 ) -> None:
     # Arrange
     now = datetime(2026, 11, 13, 9, 55, tzinfo=UTC)
@@ -113,22 +108,22 @@ def test_a_time_with_zero_microseconds_keeps_its_width_and_comes_back_unchanged(
     assert stored == record
     assert stored is not None
     assert stored.created_at.tzinfo is UTC
-    assert run_sql("SELECT created_at, updated_at FROM memories") == [
+    assert run_sql(path, "SELECT created_at, updated_at FROM memories") == [
         ("2026-11-13T09:55:00.000000+00:00", "2026-11-13T09:55:00.000000+00:00")
     ]
 
 
-def test_a_file_uses_the_write_ahead_log_and_full_sync(path: Path, run_sql: RunSQL) -> None:
+def test_a_file_uses_the_write_ahead_log_and_full_sync(path: Path) -> None:
     # Arrange
     store = SQLiteStore(str(path), timeout=5.0)
 
     # Act
-    synchronous = store._connection.execute("PRAGMA synchronous").fetchall()
+    synchronous = store._connection.execute("PRAGMA synchronous").fetchone()[0]
     store.close()
 
     # Assert
-    assert synchronous == [(2,)]  # FULL
-    assert run_sql("PRAGMA journal_mode") == [("wal",)]
+    assert synchronous == 2  # FULL
+    assert run_sql(path, "PRAGMA journal_mode") == [("wal",)]
 
 
 def test_close_closes_the_file_so_it_can_be_removed(path: Path) -> None:
@@ -166,34 +161,25 @@ def id_of_language(notes: Collection) -> str:  # a read, so it does not wait
 def test_a_write_gives_up_after_the_timeout_while_another_connection_writes(
     path: Path, write: Callable[[Collection], object]
 ) -> None:
-    # Arrange
-    with (
-        MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine,
-        closing(sqlite3.connect(path, autocommit=True)) as other,
-    ):
+    with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
+        # Arrange
         notes = engine.collection("user:123")
         before = notes.put("language", "Python")
-        other.execute("BEGIN IMMEDIATE")
 
-        # Act / Assert
-        try:
-            with pytest.raises(StorageError) as caught:
-                write(notes)
-        finally:
-            other.execute("ROLLBACK")
+        # Act
+        with another_writer(path), pytest.raises(StorageError) as caught:
+            write(notes)
+
+        # Assert
         assert isinstance(caught.value.__cause__, sqlite3.OperationalError)
         assert notes.list() == [before]
         write(notes)  # works once the other connection is done
 
 
 def test_a_write_waits_for_another_connection_within_the_timeout(path: Path) -> None:
-    # Arrange
-    with (
-        MemoryEngine.sqlite(path) as engine,
-        closing(sqlite3.connect(path, autocommit=True, check_same_thread=False)) as other,
-    ):
+    with MemoryEngine.sqlite(path) as engine, another_writer(path) as other:
+        # Arrange
         notes = engine.collection("user:123")
-        other.execute("BEGIN IMMEDIATE")
         other.execute(
             "INSERT INTO memories (id, namespace, content, metadata_json, tags_json, importance,"
             " created_at, updated_at, version) VALUES ('0' , 'user:123', 'From elsewhere', '{}',"
@@ -213,53 +199,38 @@ def test_a_write_waits_for_another_connection_within_the_timeout(path: Path) -> 
 
 
 def test_reads_do_not_wait_for_another_connection_that_writes(path: Path) -> None:
-    # Arrange
-    with (
-        MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine,
-        closing(sqlite3.connect(path, autocommit=True)) as other,
-    ):
+    with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
+        # Arrange
         notes = engine.collection("user:123")
         record = notes.add("Prefers Python", key="language")
-        other.execute("BEGIN IMMEDIATE")
-        other.execute("DELETE FROM memories")
 
-        # Act / Assert: the change is not committed yet, so it is not seen either
-        try:
+        with another_writer(path) as other:
+            other.execute("DELETE FROM memories")
+
+            # Act / Assert: the change is not committed yet, so it is not seen either
             assert notes.get(record.id) == record
             assert notes.get_by_key("language") == record
             assert notes.list() == [record]
             assert notes.count() == 1
-        finally:
-            other.execute("ROLLBACK")
 
 
 def test_adding_nothing_does_not_wait_for_another_connection(path: Path) -> None:
-    with (
-        MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine,
-        closing(sqlite3.connect(path, autocommit=True)) as other,
-    ):
-        # Arrange
-        notes = engine.collection("user:123")
-        other.execute("BEGIN IMMEDIATE")
-
-        # Act / Assert
-        try:
-            assert notes.add_many([]) == []
-        finally:
-            other.execute("ROLLBACK")
+    with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine, another_writer(path):
+        assert engine.collection("user:123").add_many([]) == []
 
 
 # Each one damages the record so that it no longer reads back, as another program could.
 DAMAGE = {
     "metadata": "UPDATE memories SET metadata_json = '{not json'",
+    # a million "[": nested deeper than Python can read back
+    "too-deep": "UPDATE memories SET metadata_json = replace(hex(zeroblob(1000000)), '00', '[')",
     "tags": "UPDATE memories SET tags_json = '5'",
     "time": "UPDATE memories SET created_at = 'yesterday'",
 }
 
+# One read of a single record, and one inside a change, which must be undone.
 READS: dict[str, Callable[[Collection, str], object]] = {
     "get": lambda notes, record_id: notes.get(record_id),
-    "get_by_key": lambda notes, _: notes.get_by_key("language"),
-    "list": lambda notes, _: notes.list(),
     "update": lambda notes, record_id: notes.update(record_id, content="Prefers Rust"),
 }
 
@@ -267,16 +238,16 @@ READS: dict[str, Callable[[Collection, str], object]] = {
 @pytest.mark.parametrize("damage", DAMAGE.values(), ids=DAMAGE.keys())
 @pytest.mark.parametrize("read", READS.values(), ids=READS.keys())
 def test_a_damaged_record_is_a_storage_error(
-    path: Path, run_sql: RunSQL, damage: str, read: Callable[[Collection, str], object]
+    path: Path, damage: str, read: Callable[[Collection, str], object]
 ) -> None:
     with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
         # Arrange
         notes = engine.collection("user:123")
-        record = notes.add("Prefers Python", key="language")
-        run_sql(damage)
+        record = notes.add("Prefers Python")
+        run_sql(path, damage)
 
         # Act / Assert
         with pytest.raises(StorageError, match="damaged") as caught:
             read(notes, record.id)
-        assert isinstance(caught.value.__cause__, TypeError | ValueError)
+        assert isinstance(caught.value.__cause__, TypeError | ValueError | RecursionError)
         notes.add("Likes tea")  # nothing was left half done

@@ -1,5 +1,4 @@
 import math
-import sys
 import threading
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
@@ -473,13 +472,7 @@ def test_path_accepts_a_string_or_a_path_object(value: object, expected: str) ->
     [
         pytest.param("", id="empty"),  # SQLite would make a temporary database, lost on close
         pytest.param("memory\x00.db", id="nul"),
-        pytest.param(
-            "\ud800.db",
-            id="lone-surrogate",
-            marks=pytest.mark.skipif(
-                sys.platform == "win32", reason="Windows file names may hold lone surrogates"
-            ),
-        ),
+        pytest.param("\ud800.db", id="lone-surrogate"),
         pytest.param(b"memory.db", id="bytes"),
         pytest.param(BytesPath(), id="path-object-giving-bytes"),
         pytest.param(None, id="none"),
@@ -512,7 +505,6 @@ def test_timeout_accepts_seconds_and_returns_a_float(value: object, expected: fl
     # Assert
     assert result == expected
     assert type(result) is float
-    assert math.copysign(1, result) == 1
 
 
 @pytest.mark.parametrize(

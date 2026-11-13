@@ -122,19 +122,10 @@ def memories(value: object) -> list[NewMemory]:
 
 def path(value: object) -> str:
     """A database path: a non-empty string or a path object, as ``str``."""
-    try:
-        result = os.fspath(value)  # type: ignore[call-overload]
-    except TypeError:
-        result = None
-    if not isinstance(result, str) or not result:
-        raise ValidationError("path must be a non-empty string or path object")
+    result = text("path", os.fspath(value) if isinstance(value, os.PathLike) else value)
     if "\x00" in result:
         raise ValidationError("path must not contain a NUL character")
-    try:
-        os.fsencode(result)
-    except UnicodeEncodeError:
-        raise ValidationError("path cannot be a file name on this system") from None
-    return str.__str__(result)
+    return result
 
 
 def timeout(value: object) -> float:
@@ -142,7 +133,7 @@ def timeout(value: object) -> float:
     number = _as_float(value)
     if number is None or not 0.0 <= number <= _MAX_TIMEOUT:
         raise ValidationError(f"timeout must be a number of seconds from 0 to {_MAX_TIMEOUT}")
-    return abs(number)  # -0.0 is no different, but reads oddly
+    return number
 
 
 def _string(name: str, value: object) -> str:

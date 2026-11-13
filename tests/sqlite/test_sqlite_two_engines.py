@@ -8,11 +8,9 @@ import pytest
 
 from pybodn import MemoryEngine
 from pybodn.errors import ConcurrentUpdateError, RecordNotFoundError
+from tests.sqlite.support import SHORT_WAIT, THREADS, WAIT_SECONDS
 
-THREADS = 8
 CALLS = 20
-WAIT_SECONDS = 10
-SHORT_WAIT = 0.05  # long enough for a free file, too short for one left locked
 MISSING_ID = "0" * 32
 
 

@@ -13,10 +13,7 @@ import pytest
 from pybodn import MemoryEngine
 from pybodn._storage.sqlite import SQLiteStore, _use_write_ahead_log
 from pybodn.errors import StorageError
-
-SHORT_WAIT = 0.05  # seconds
-RELEASE_AFTER = 0.2  # seconds after which the other connection stops writing
-GIVE_UP_WITHIN = 5  # seconds: generous for a slow machine, far below a wait that never ends
+from tests.sqlite.support import RELEASE_AFTER, SHORT_WAIT, WAIT_SECONDS, another_writer
 
 
 class FailingCommit:
@@ -43,10 +40,10 @@ class FailingCommit:
 
 @pytest.mark.parametrize("rolls_back", [False, True], ids=["still-open", "already-rolled-back"])
 def test_a_failed_commit_writes_nothing_and_leaves_the_store_usable(
-    tmp_path: Path, rolls_back: bool
+    path: Path, rolls_back: bool
 ) -> None:
     # Arrange
-    store = SQLiteStore(str(tmp_path / "memory.db"), timeout=5.0)
+    store = SQLiteStore(str(path), timeout=5.0)
     connection = store._connection
     with MemoryEngine(store) as engine:
         notes = engine.collection("user:123")
@@ -65,47 +62,36 @@ def test_a_failed_commit_writes_nothing_and_leaves_the_store_usable(
         assert notes.count() == 1
 
 
-def test_the_switch_to_the_log_waits_for_another_writer(tmp_path: Path) -> None:
+def test_the_switch_to_the_log_waits_for_another_writer(path: Path) -> None:
     # Arrange: SQLite itself refuses the switch at once while another connection writes
-    path = tmp_path / "memory.db"
-    with (
-        closing(sqlite3.connect(path, autocommit=True)) as connection,
-        closing(sqlite3.connect(path, autocommit=True, check_same_thread=False)) as other,
-    ):
+    with closing(sqlite3.connect(path, autocommit=True)) as connection:
         connection.execute("CREATE TABLE notes (text)")
-        other.execute("BEGIN IMMEDIATE")
-        release = threading.Timer(RELEASE_AFTER, lambda: other.execute("ROLLBACK"))
+        with another_writer(path) as other:
+            release = threading.Timer(RELEASE_AFTER, lambda: other.execute("ROLLBACK"))
 
-        # Act
-        release.start()
-        try:
-            _use_write_ahead_log(connection, timeout=5.0)
-        finally:
-            release.join()
+            # Act
+            release.start()
+            try:
+                _use_write_ahead_log(connection, timeout=WAIT_SECONDS)
+            finally:
+                release.join()
 
         # Assert
         assert connection.execute("PRAGMA journal_mode").fetchall() == [("wal",)]
 
 
-def test_the_switch_to_the_log_gives_up_after_the_timeout(tmp_path: Path) -> None:
-    # Arrange
-    path = tmp_path / "memory.db"
-    with (
-        closing(sqlite3.connect(path, autocommit=True)) as connection,
-        closing(sqlite3.connect(path, autocommit=True)) as other,
-    ):
+def test_the_switch_to_the_log_gives_up_after_the_timeout(path: Path) -> None:
+    with closing(sqlite3.connect(path, autocommit=True)) as connection:
+        # Arrange
         connection.execute("CREATE TABLE notes (text)")
-        other.execute("BEGIN IMMEDIATE")
 
-        # Act
-        started = time.monotonic()
-        try:
+        with another_writer(path):
+            # Act
+            started = time.monotonic()
             with pytest.raises(sqlite3.OperationalError, match="locked"):
                 _use_write_ahead_log(connection, timeout=SHORT_WAIT)
-        finally:
             waited = time.monotonic() - started
-            other.execute("ROLLBACK")
 
         # Assert
-        assert SHORT_WAIT <= waited < GIVE_UP_WITHIN
+        assert SHORT_WAIT <= waited < WAIT_SECONDS
         assert connection.execute("PRAGMA journal_mode").fetchall() == [("delete",)]

@@ -9,11 +9,11 @@ Any call after ``close()`` raises ``EngineClosedError``.
 """
 
 import builtins
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Literal, Protocol
 
 from pybodn._models import MemoryRecord
-from pybodn.errors import EngineClosedError
+from pybodn.errors import DuplicateKeyError, EngineClosedError
 
 # The field that ``value`` is matched against.
 type Lookup = Literal["id", "key"]
@@ -35,8 +35,8 @@ class Store(Protocol):
     def insert(self, records: Sequence[MemoryRecord]) -> None:
         """Write every record, or none of them.
 
-        A key already used in the namespace, or repeated among ``records``, raises
-        ``DuplicateKeyError``.
+        A key already used in the namespace raises ``DuplicateKeyError``. The caller sees to
+        it that ``records`` never repeat a key among themselves.
         """
 
     def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
@@ -65,6 +65,20 @@ class Store(Protocol):
 
     def close(self) -> None:
         """Release the storage. Safe to call again."""
+
+
+def reject_stored_keys(
+    records: Iterable[MemoryRecord], is_stored: Callable[[str, str], bool]
+) -> None:
+    """Raise ``DuplicateKeyError`` for the first record whose key its namespace already has.
+
+    ``is_stored(namespace, key)`` tells whether the store holds that key.
+    """
+    for record in records:
+        if record.key is not None and is_stored(record.namespace, record.key):
+            raise DuplicateKeyError(
+                f"key {record.key!r} is already used in namespace {record.namespace!r}"
+            )
 
 
 def ensure_open(store: Store) -> None:
