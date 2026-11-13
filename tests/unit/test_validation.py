@@ -1,5 +1,6 @@
 import math
 import threading
+from collections.abc import Callable
 from enum import StrEnum
 from fractions import Fraction
 from types import MappingProxyType
@@ -31,6 +32,24 @@ def nested(levels: int) -> dict[str, object]:
     for _ in range(levels - 1):
         value = [value]
     return {"deep": value}
+
+
+def error_within_time_limit(check: Callable[[], object]) -> Exception:
+    """Run ``check`` in a thread, so a check that never ends fails the test; return its error."""
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            check()
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=WAIT_SECONDS)
+    assert not worker.is_alive(), f"the check did not finish in {WAIT_SECONDS} seconds"
+    assert len(errors) == 1, "the check raised nothing"
+    return errors[0]
 
 
 # text: namespace, content, id ---------------------------------------------------------------
@@ -181,24 +200,74 @@ def test_metadata_that_reuses_one_list_over_and_over_is_rejected() -> None:
     value: list[object] = []
     for _ in range(30):
         value = [value, value]
-    errors: list[Exception] = []
 
-    def check() -> None:
-        try:
-            validate.metadata({"value": value})
-        except Exception as error:
-            errors.append(error)
-
-    # Act: in a thread, so a broken limit fails the test instead of hanging it
-    worker = threading.Thread(target=check, daemon=True)
-    worker.start()
-    worker.join(timeout=WAIT_SECONDS)
+    # Act
+    error = error_within_time_limit(lambda: validate.metadata({"value": value}))
 
     # Assert
-    assert not worker.is_alive(), f"the check did not finish in {WAIT_SECONDS} seconds"
-    assert len(errors) == 1
-    assert isinstance(errors[0], ValidationError)
-    assert "1,000,000 values" in str(errors[0])
+    assert isinstance(error, ValidationError)
+    assert "1,000,000 values" in str(error)
+
+
+@pytest.mark.parametrize(
+    ("text", "size"),
+    [
+        pytest.param("abcdefgh", 10, id="ascii"),
+        pytest.param("їїїї", 10, id="two-byte-letters"),
+        pytest.param("🙂🙂", 10, id="four-byte-emoji"),
+    ],
+)
+def test_metadata_allows_text_up_to_the_limit_in_utf8_bytes(
+    monkeypatch: pytest.MonkeyPatch, text: str, size: int
+) -> None:
+    # Arrange: the key "ab" takes two bytes, the text the rest
+    monkeypatch.setattr(validate, "_MAX_TEXT_BYTES", size)
+
+    # Act / Assert
+    assert validate.metadata({"ab": text}) == {"ab": text}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"ab": "abcdefghi"}, id="value-one-byte-over"),
+        pytest.param({"ab": "їїїїa"}, id="letters-counted-in-bytes"),
+        pytest.param({"abcdefghijk": 1}, id="long-key"),
+        pytest.param({"a": ["abcde", "abcde"]}, id="texts-added-up"),
+    ],
+)
+def test_metadata_rejects_text_over_the_limit(
+    monkeypatch: pytest.MonkeyPatch, value: dict[str, object]
+) -> None:
+    # Arrange
+    monkeypatch.setattr(validate, "_MAX_TEXT_BYTES", 10)
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="metadata must not hold more than 10 bytes of text"):
+        validate.metadata(value)
+
+
+LONG_TEXT = "x" * 1_000_000
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"list": [LONG_TEXT] * 1_000}, id="as-a-value"),
+        pytest.param({"list": [{LONG_TEXT: 1}] * 1_000}, id="as-a-key"),
+    ],
+)
+def test_metadata_that_reuses_one_long_text_over_and_over_is_rejected(
+    value: dict[str, object],
+) -> None:
+    # Arrange: one megabyte in memory, a gigabyte once written out in full
+
+    # Act
+    error = error_within_time_limit(lambda: validate.metadata(value))
+
+    # Assert
+    assert isinstance(error, ValidationError)
+    assert "16,777,216 bytes of text" in str(error)
 
 
 def test_metadata_turns_str_subclasses_into_plain_strs() -> None:
