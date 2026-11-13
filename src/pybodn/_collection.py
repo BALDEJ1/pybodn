@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pybodn import _validation as validate
 from pybodn._models import JSONValue, MemoryRecord, NewMemory
-from pybodn._storage.base import Store
+from pybodn._storage.base import Store, ensure_open
 from pybodn.errors import ConcurrentUpdateError, RecordNotFoundError, ValidationError
 
 type Clock = Callable[[], datetime]
@@ -63,10 +63,12 @@ class Collection:
 
     def add(self, content: str, **fields: Unpack[NewMemoryFields]) -> MemoryRecord:
         """Add a record. The same as ``add_many([NewMemory(content, ...)])[0]``."""
+        ensure_open(self._store)
         return self.add_many([NewMemory(content, **fields)])[0]
 
     def add_many(self, memories: Iterable[NewMemory]) -> builtins.list[MemoryRecord]:
         """Add every memory, or none if any of them fails. Returns them in the same order."""
+        ensure_open(self._store)
         makers = [_prepare(self._namespace, memory) for memory in validate.memories(memories)]
         now = self._clock()
         records = [
@@ -81,6 +83,7 @@ class Collection:
         A field not passed gets its default. A replaced record keeps its id, creation
         time and place in ``list()``.
         """
+        ensure_open(self._store)
         checked_key = validate.text("key", key)
         make = _prepare(self._namespace, NewMemory(content, key=checked_key, **fields))
 
@@ -99,10 +102,12 @@ class Collection:
 
     def get(self, id: str) -> MemoryRecord | None:
         """The record with this id, or ``None``."""
+        ensure_open(self._store)
         return self._store.get(self._namespace, "id", validate.text("id", id))
 
     def get_by_key(self, key: str) -> MemoryRecord | None:
         """The record with this key, or ``None``."""
+        ensure_open(self._store)
         return self._store.get(self._namespace, "key", validate.text("key", key))
 
     def update(
@@ -113,6 +118,7 @@ class Collection:
         Raises ``RecordNotFoundError`` if there is no such record, and
         ``ConcurrentUpdateError`` if ``expected_version`` is not the record's version.
         """
+        ensure_open(self._store)
         checked = _check_changes(changes)
         checked_id = validate.text("id", id)
         expected = validate.expected_version(expected_version)
@@ -134,10 +140,12 @@ class Collection:
 
     def delete(self, id: str) -> bool:
         """Remove the record. ``False`` if there was none, so repeating is safe."""
+        ensure_open(self._store)
         return self._store.delete(self._namespace, validate.text("id", id))
 
     def list(self, *, limit: int | None = None, offset: int = 0) -> builtins.list[MemoryRecord]:
         """Records in the order they were added. ``limit`` and ``offset`` select a page."""
+        ensure_open(self._store)
         return self._store.list(
             self._namespace, limit=validate.limit(limit), offset=validate.offset(offset)
         )

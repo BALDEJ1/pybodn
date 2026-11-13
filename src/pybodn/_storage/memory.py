@@ -7,8 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from pybodn._models import MemoryRecord
-from pybodn._storage.base import Build, Lookup
-from pybodn.errors import DuplicateKeyError, EngineClosedError
+from pybodn._storage.base import Build, Lookup, ensure_open
+from pybodn.errors import DuplicateKeyError
 
 
 @dataclass(slots=True)
@@ -39,15 +39,16 @@ class InMemoryStore:
 
     def get(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         with self._lock:
-            self._check_open()
+            ensure_open(self)
             record = self._find(namespace, by, value)
             return None if record is None else _copy(record)
 
     def insert(self, records: Sequence[MemoryRecord]) -> None:
+        copies = [_copy(record) for record in records]  # a copy that fails writes nothing
         with self._lock:
-            self._check_open()
+            ensure_open(self)
             used: set[tuple[str, str]] = set()
-            for record in records:
+            for record in copies:
                 if record.key is None:
                     continue
                 slot = (record.namespace, record.key)
@@ -56,19 +57,19 @@ class InMemoryStore:
                         f"key {record.key!r} is already used in namespace {record.namespace!r}"
                     )
                 used.add(slot)
-            for record in records:
-                self._write(_copy(record))
+            for record in copies:
+                self._write(record)
 
     def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
         with self._lock:
-            self._check_open()
+            ensure_open(self)
             record = build(self._find(namespace, by, value))
             self._write(_copy(record))
             return record
 
     def delete(self, namespace: str, id: str) -> bool:
         with self._lock:
-            self._check_open()
+            ensure_open(self)
             space = self._namespaces.get(namespace)
             if space is None or id not in space.records:
                 return False
@@ -83,7 +84,7 @@ class InMemoryStore:
         self, namespace: str, *, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
         with self._lock:
-            self._check_open()
+            ensure_open(self)
             space = self._namespaces.get(namespace)
             if space is None:
                 return []
@@ -92,7 +93,7 @@ class InMemoryStore:
 
     def count(self, namespace: str) -> int:
         with self._lock:
-            self._check_open()
+            ensure_open(self)
             space = self._namespaces.get(namespace)
             return 0 if space is None else len(space.records)
 
@@ -100,10 +101,6 @@ class InMemoryStore:
         with self._lock:
             self._closed = True
             self._namespaces.clear()
-
-    def _check_open(self) -> None:
-        if self._closed:
-            raise EngineClosedError("the engine is closed")
 
     def _find(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         space = self._namespaces.get(namespace)

@@ -5,9 +5,8 @@ from typing import Self
 
 from pybodn import _validation as validate
 from pybodn._collection import Clock, Collection
-from pybodn._storage.base import Store
+from pybodn._storage.base import Store, ensure_open
 from pybodn._storage.memory import InMemoryStore
-from pybodn.errors import EngineClosedError
 
 
 def _utc_now() -> datetime:
@@ -35,7 +34,7 @@ class MemoryEngine:
 
     def collection(self, namespace: str) -> Collection:
         """The records of ``namespace``. Namespaces never see each other's records."""
-        self._check_open()
+        ensure_open(self._store)
         return Collection(self._store, validate.text("namespace", namespace), self._clock)
 
     def close(self) -> None:
@@ -43,12 +42,8 @@ class MemoryEngine:
         self._store.close()
 
     def __enter__(self) -> Self:
-        self._check_open()
+        ensure_open(self._store)
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-    def _check_open(self) -> None:
-        if self._store.closed:
-            raise EngineClosedError("the engine is closed")

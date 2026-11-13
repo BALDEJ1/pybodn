@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from typing import Literal, Protocol
 
 from pybodn._models import MemoryRecord
+from pybodn.errors import EngineClosedError
 
 # The field that ``value`` is matched against.
 type Lookup = Literal["id", "key"]
@@ -41,10 +42,11 @@ class Store(Protocol):
     def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
         """Find a record, let ``build`` decide what to write, write it: one atomic step.
 
-        ``build`` gets the current record, or ``None``. It must not change that record,
-        and its result keeps the record's id, namespace and key. The result replaces the
-        current record in place or, if there is none, is added at the end. If ``build``
-        raises, nothing is written. Returns the result.
+        ``build`` gets the current record, or ``None``, and must not change it. Its result
+        stays in ``namespace``. If there is a current record, the result keeps its id and
+        key and replaces it in place; if not, the result is added at the end and, when
+        looked up by key, has that key. If ``build`` raises, nothing is written.
+        Returns the result.
         """
 
     def delete(self, namespace: str, id: str) -> bool:
@@ -63,3 +65,9 @@ class Store(Protocol):
 
     def close(self) -> None:
         """Release the storage. Safe to call again."""
+
+
+def ensure_open(store: Store) -> None:
+    """Raise ``EngineClosedError`` if ``store`` is closed."""
+    if store.closed:
+        raise EngineClosedError("the engine is closed")

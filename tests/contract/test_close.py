@@ -18,6 +18,17 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "delete": lambda notes: notes.delete(MISSING_ID),
     "list": lambda notes: notes.list(),
     "count": lambda notes: notes.count(),
+    # Closed is reported before bad input, as sqlite3 does for a closed connection.
+    "add-with-bad-content": lambda notes: notes.add(""),
+    "add-with-unknown-field": lambda notes: notes.add("a", colour="red"),  # type: ignore[call-arg]
+    "add_many-with-bad-items": lambda notes: notes.add_many([None]),  # type: ignore[list-item]
+    "put-with-bad-key": lambda notes: notes.put("", "Python"),
+    "get-with-bad-id": lambda notes: notes.get(""),
+    "get_by_key-with-bad-key": lambda notes: notes.get_by_key(""),
+    "update-without-fields": lambda notes: notes.update(MISSING_ID),
+    "update-with-unknown-field": lambda notes: notes.update(MISSING_ID, key="k"),  # type: ignore[call-arg]
+    "delete-with-bad-id": lambda notes: notes.delete(""),
+    "list-with-bad-limit": lambda notes: notes.list(limit=0),
 }
 
 
@@ -34,10 +45,11 @@ def test_every_action_after_close_raises_engine_closed_error(
         action(notes)
 
 
-def test_a_collection_cannot_be_taken_after_close(engine: MemoryEngine) -> None:
+@pytest.mark.parametrize("namespace", ["user:123", ""])
+def test_a_collection_cannot_be_taken_after_close(engine: MemoryEngine, namespace: str) -> None:
     engine.close()
     with pytest.raises(EngineClosedError):
-        engine.collection("user:123")
+        engine.collection(namespace)
 
 
 def test_a_closed_engine_cannot_be_entered_again(engine: MemoryEngine) -> None:

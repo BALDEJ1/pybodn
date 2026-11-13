@@ -1,20 +1,31 @@
-"""What the public API cannot show: the in-memory store gives memory back."""
+"""What the public API cannot show about the in-memory store."""
 
 from datetime import UTC, datetime
 
-from pybodn._models import MemoryRecord
+import pytest
+
+from pybodn._models import JSONValue, MemoryRecord
 from pybodn._storage.memory import InMemoryStore
 
 NOW = datetime(2026, 11, 13, 9, 55, tzinfo=UTC)
 
 
-def record(record_id: str, key: str | None = None) -> MemoryRecord:
+class Uncopyable:
+    """Fails to copy, as deep metadata can when the call stack is already deep."""
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "Uncopyable":
+        raise RecursionError("maximum recursion depth exceeded")
+
+
+def record(
+    record_id: str, key: str | None = None, metadata: dict[str, JSONValue] | None = None
+) -> MemoryRecord:
     return MemoryRecord(
         id=record_id,
         namespace="user:123",
         content="Prefers Python",
         key=key,
-        metadata={},
+        metadata={} if metadata is None else metadata,
         tags=(),
         importance=0.5,
         source=None,
@@ -22,6 +33,21 @@ def record(record_id: str, key: str | None = None) -> MemoryRecord:
         updated_at=NOW,
         version=1,
     )
+
+
+def test_a_batch_that_fails_to_copy_writes_nothing() -> None:
+    # Arrange
+    store = InMemoryStore()
+    batch = [
+        record("a"),
+        record("b", metadata={"value": Uncopyable()}),  # type: ignore[dict-item]
+        record("c"),
+    ]
+
+    # Act / Assert
+    with pytest.raises(RecursionError):
+        store.insert(batch)
+    assert store.count("user:123") == 0
 
 
 def test_deleting_the_last_record_of_a_namespace_releases_the_namespace() -> None:
