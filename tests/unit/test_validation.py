@@ -25,6 +25,13 @@ class Huge(IntEnum):
     PAST_64_BITS = 2**63
 
 
+class Unencodable(str):
+    """Text that fails the test if anything encodes it."""
+
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        raise AssertionError("the text was encoded")
+
+
 def circular() -> dict[str, object]:
     value: dict[str, object] = {}
     value["self"] = value
@@ -238,6 +245,7 @@ def test_metadata_allows_text_up_to_the_limit_in_utf8_bytes(
         pytest.param({"ab": "abcdefghi"}, id="value-one-byte-over"),
         pytest.param({"ab": "їїїїa"}, id="letters-counted-in-bytes"),
         pytest.param({"abcdefghijk": 1}, id="long-key"),
+        pytest.param({"abcdef": 1, "ghijk": 2}, id="keys-added-up"),
         pytest.param({"a": ["abcde", "abcde"]}, id="texts-added-up"),
     ],
 )
@@ -250,6 +258,17 @@ def test_metadata_rejects_text_over_the_limit(
     # Act / Assert
     with pytest.raises(ValidationError, match="metadata must not hold more than 10 bytes of text"):
         validate.metadata(value)
+
+
+def test_metadata_rejects_text_with_more_characters_than_the_limit_without_encoding_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange: every character takes at least a byte, so the size is known without encoding
+    monkeypatch.setattr(validate, "_MAX_TEXT_BYTES", 10)
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="10 bytes of text"):
+        validate.metadata({"a": Unencodable("abcdefghijk")})
 
 
 LONG_TEXT = "x" * 1_000_000
