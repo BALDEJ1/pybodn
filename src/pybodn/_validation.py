@@ -8,7 +8,7 @@ import json
 import numbers
 from collections.abc import Iterable, Mapping
 
-from pybodn._models import JSONValue
+from pybodn._models import JSONValue, NewMemory
 from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
@@ -78,6 +78,24 @@ def limit(value: object) -> int | None:
 def offset(value: object) -> int:
     """An integer from 0."""
     return _integer("offset", value, minimum=0)
+
+
+def expected_version(value: object) -> int | None:
+    """No expected version, or an integer from 1. ``True`` is not taken for 1."""
+    return None if value is None else _integer("expected_version", value, minimum=1)
+
+
+def memories(value: object) -> list[NewMemory]:
+    """A batch of ``NewMemory`` objects from any iterable, as a list."""
+    if not isinstance(value, Iterable):
+        raise ValidationError(f"memories must be an iterable, not {type(value).__name__}")
+    batch = list(value)
+    for memory in batch:
+        if not isinstance(memory, NewMemory):
+            raise ValidationError(
+                f"memories must contain NewMemory objects, not {type(memory).__name__}"
+            )
+    return batch
 
 
 def _string(name: str, value: object) -> str:
