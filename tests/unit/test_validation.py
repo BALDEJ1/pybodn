@@ -1,5 +1,7 @@
 import math
-from enum import StrEnum
+import threading
+from collections.abc import Callable
+from enum import IntEnum, StrEnum
 from fractions import Fraction
 from types import MappingProxyType
 
@@ -10,11 +12,24 @@ from pybodn._models import NewMemory
 from pybodn.errors import ValidationError
 
 MAX_INTEGER = 2**63 - 1
+MIN_INTEGER = -(2**63)
 LONE_SURROGATE = "\ud800"
+WAIT_SECONDS = 10  # a check that never ends fails after this instead of hanging
 
 
 class Color(StrEnum):
     RED = "red"
+
+
+class Huge(IntEnum):
+    PAST_64_BITS = 2**63
+
+
+class Unencodable(str):
+    """Text that fails the test if anything encodes it."""
+
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        raise AssertionError("the text was encoded")
 
 
 def circular() -> dict[str, object]:
@@ -29,6 +44,24 @@ def nested(levels: int) -> dict[str, object]:
     for _ in range(levels - 1):
         value = [value]
     return {"deep": value}
+
+
+def error_within_time_limit(check: Callable[[], object]) -> Exception:
+    """Run ``check`` in a thread, so a check that never ends fails the test; return its error."""
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            check()
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=WAIT_SECONDS)
+    assert not worker.is_alive(), f"the check did not finish in {WAIT_SECONDS} seconds"
+    assert len(errors) == 1, "the check raised nothing"
+    return errors[0]
 
 
 # text: namespace, content, id ---------------------------------------------------------------
@@ -154,6 +187,145 @@ def test_metadata_keeps_the_key_order() -> None:
 
 def test_metadata_allows_100_levels_of_nesting() -> None:
     assert validate.metadata(nested(100)) == nested(100)
+
+
+def test_metadata_allows_values_up_to_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    monkeypatch.setattr(validate, "_MAX_VALUES", 5)
+    value = {"list": [1, 2, 3]}  # the dict, the list and three numbers
+
+    # Act / Assert
+    assert validate.metadata(value) == value
+
+
+def test_metadata_rejects_one_value_over_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    monkeypatch.setattr(validate, "_MAX_VALUES", 5)
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="metadata must not hold more than 5 values"):
+        validate.metadata({"list": [1, 2, 3, 4]})
+
+
+def test_metadata_that_reuses_one_list_over_and_over_is_rejected() -> None:
+    # Arrange: small in memory, but over a billion values once written out in full
+    value: list[object] = []
+    for _ in range(30):
+        value = [value, value]
+
+    # Act
+    error = error_within_time_limit(lambda: validate.metadata({"value": value}))
+
+    # Assert
+    assert isinstance(error, ValidationError)
+    assert "1,000,000 values" in str(error)
+
+
+@pytest.mark.parametrize(
+    ("text", "size"),
+    [
+        pytest.param("abcdefgh", 10, id="ascii"),
+        pytest.param("їїїї", 10, id="two-byte-letters"),
+        pytest.param("🙂🙂", 10, id="four-byte-emoji"),
+    ],
+)
+def test_metadata_allows_text_up_to_the_limit_in_utf8_bytes(
+    monkeypatch: pytest.MonkeyPatch, text: str, size: int
+) -> None:
+    # Arrange: the key "ab" takes two bytes, the text the rest
+    monkeypatch.setattr(validate, "_MAX_TEXT_BYTES", size)
+
+    # Act / Assert
+    assert validate.metadata({"ab": text}) == {"ab": text}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"ab": "abcdefghi"}, id="value-one-byte-over"),
+        pytest.param({"ab": "їїїїa"}, id="letters-counted-in-bytes"),
+        pytest.param({"abcdefghijk": 1}, id="long-key"),
+        pytest.param({"abcdef": 1, "ghijk": 2}, id="keys-added-up"),
+        pytest.param({"a": ["abcde", "abcde"]}, id="texts-added-up"),
+    ],
+)
+def test_metadata_rejects_text_over_the_limit(
+    monkeypatch: pytest.MonkeyPatch, value: dict[str, object]
+) -> None:
+    # Arrange
+    monkeypatch.setattr(validate, "_MAX_TEXT_BYTES", 10)
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="metadata must not hold more than 10 bytes of text"):
+        validate.metadata(value)
+
+
+def test_metadata_rejects_text_with_more_characters_than_the_limit_without_encoding_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange: every character takes at least a byte, so the size is known without encoding
+    monkeypatch.setattr(validate, "_MAX_TEXT_BYTES", 10)
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match="10 bytes of text"):
+        validate.metadata({"a": Unencodable("abcdefghijk")})
+
+
+LONG_TEXT = "x" * 1_000_000
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"list": [LONG_TEXT] * 1_000}, id="as-a-value"),
+        pytest.param({"list": [{LONG_TEXT: 1}] * 1_000}, id="as-a-key"),
+    ],
+)
+def test_metadata_that_reuses_one_long_text_over_and_over_is_rejected(
+    value: dict[str, object],
+) -> None:
+    # Arrange: one megabyte in memory, a gigabyte once written out in full
+
+    # Act
+    error = error_within_time_limit(lambda: validate.metadata(value))
+
+    # Assert
+    assert isinstance(error, ValidationError)
+    assert "16,777,216 bytes of text" in str(error)
+
+
+@pytest.mark.parametrize("number", [MIN_INTEGER, MAX_INTEGER])
+def test_metadata_allows_integers_that_fit_in_64_bits(number: int) -> None:
+    assert validate.metadata({"list": [number]}) == {"list": [number]}
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        pytest.param(MIN_INTEGER - 1, id="one-below"),
+        pytest.param(MAX_INTEGER + 1, id="one-above"),
+        pytest.param(10**4000, id="thousands-of-digits"),
+        pytest.param(Huge.PAST_64_BITS, id="int-subclass"),
+    ],
+)
+def test_metadata_rejects_integers_that_do_not_fit_in_64_bits(number: int) -> None:
+    with pytest.raises(
+        ValidationError, match=f"metadata integers must be from {MIN_INTEGER} to {MAX_INTEGER}"
+    ):
+        validate.metadata({"list": [number]})
+
+
+def test_metadata_that_reuses_one_huge_integer_over_and_over_is_rejected() -> None:
+    # Arrange: a few kilobytes in memory, gigabytes once written out in full, and
+    # 1,000,000 values with the dict and the list, so the value limit lets it through
+    value = {"list": [10**4000] * 999_998}
+
+    # Act
+    error = error_within_time_limit(lambda: validate.metadata(value))
+
+    # Assert
+    assert isinstance(error, ValidationError)
+    assert "metadata integers" in str(error)
 
 
 def test_metadata_turns_str_subclasses_into_plain_strs() -> None:

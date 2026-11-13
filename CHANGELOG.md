@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MemoryEngine.in_memory()`: an engine that keeps records in memory. Use it in `with`, or call `close()`.
 - `engine.collection(namespace)` returns a `Collection` with `add`, `add_many` (all or nothing), `put` (create or replace by key), `get`, `get_by_key`, `update` (optionally checked against `expected_version`), `delete`, `list` (in the order added, with `limit` and `offset`) and `count`.
 - `MemoryRecord`, `NewMemory` and `JSONValue`, and the errors in `pybodn.errors`.
+- Metadata is checked before it is stored: at most 100 levels deep, 1,000,000 values and 16 MB of text, with integers that fit in 64 bits. Anything larger raises `ValidationError` instead of slowing the call down.
 
 ### Changed
 

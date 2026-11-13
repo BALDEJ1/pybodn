@@ -7,15 +7,30 @@ Each function takes any value and returns it in its stored form, or raises
 import json
 import numbers
 from collections.abc import Iterable, Mapping
+from typing import NamedTuple
 
 from pybodn._models import JSONValue, NewMemory
 from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
+_MIN_INTEGER = -(2**63)  # the smallest
 
 # How deep Python itself can nest depends on the platform's stack, so data written on
 # one machine could fail to load on another. A fixed limit behaves the same everywhere.
 _MAX_DEPTH = 100
+
+# Metadata is measured as it would be written out. The same list placed inside itself
+# twice, again and again, looks tiny but writes out as billions of values; one long text
+# placed many times writes out in full each time. 16 MB is what MongoDB allows a document.
+# Integers are held to what SQLite can store, so none of them writes out longer than 20
+# characters.
+_MAX_VALUES = 1_000_000
+_MAX_TEXT_BYTES = 16 * 1024 * 1024
+
+
+class _Size(NamedTuple):
+    values: int
+    text_bytes: int
 
 
 def text(name: str, value: object) -> str:
@@ -47,13 +62,18 @@ def importance(value: object) -> float:
 def metadata(value: object) -> dict[str, JSONValue]:
     """A deep copy: JSON values under string keys, at most 100 levels deep.
 
+    At most 1,000,000 values and 16 MB of text in all, counted as written out: the
+    mapping and every list and dict are one value each, keys count as text in UTF-8,
+    and anything placed twice counts twice. Integers must fit in 64 bits, as SQLite
+    stores them.
+
     Non-string keys and tuples are rejected rather than converted, because JSON
     would silently turn ``{1: ...}`` into ``{"1": ...}`` and a tuple into a list.
     """
     if not isinstance(value, Mapping):
         raise ValidationError(f"metadata must be a mapping, not {type(value).__name__}")
     original = dict(value)
-    _check_nesting(original, levels_left=_MAX_DEPTH)
+    _check_nesting(original, levels_left=_MAX_DEPTH, room=_Size(_MAX_VALUES, _MAX_TEXT_BYTES))
     try:
         encoded = json.dumps(original, ensure_ascii=False, allow_nan=False)
         encoded.encode("utf-8")  # lone surrogates cannot be stored
@@ -120,22 +140,51 @@ def _as_float(value: object) -> float | None:
         return None
 
 
-def _check_nesting(value: object, *, levels_left: int) -> None:
-    """Allow dicts with string keys and lists, at most ``levels_left`` levels deep.
+def _check_nesting(value: object, *, levels_left: int, room: _Size) -> _Size:
+    """Allow dicts with string keys and lists, at most ``levels_left`` levels deep and no
+    larger than ``room``. Return the size of ``value``, itself included.
 
     A structure that contains itself is infinitely deep, so it is rejected too.
     """
+    if room.values == 0:
+        raise ValidationError(f"metadata must not hold more than {_MAX_VALUES:,} values")
     if isinstance(value, tuple):
         raise ValidationError("metadata must use lists, not tuples")
+    if isinstance(value, str):
+        return _Size(1, _text_bytes(value, room.text_bytes))
+    if isinstance(value, int) and not _MIN_INTEGER <= value <= _MAX_INTEGER:
+        raise ValidationError(f"metadata integers must be from {_MIN_INTEGER} to {_MAX_INTEGER}")
     if not isinstance(value, dict | list):
-        return  # a leaf: json.dumps rejects anything that is not a JSON value
+        return _Size(1, 0)  # json.dumps rejects anything that is not a JSON value
     if levels_left == 0:
         raise ValidationError(f"metadata must not be nested more than {_MAX_DEPTH} levels deep")
-    if isinstance(value, dict) and not all(isinstance(key, str) for key in value):
-        raise ValidationError("metadata keys must be strings")
-    children = value.values() if isinstance(value, dict) else value
+    values, text_bytes = 1, 0
+    children: Iterable[object]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValidationError("metadata keys must be strings")
+        for key in value:
+            text_bytes += _text_bytes(key, room.text_bytes - text_bytes)
+        children = value.values()
+    else:
+        children = value
     for child in children:
-        _check_nesting(child, levels_left=levels_left - 1)
+        left = _Size(room.values - values, room.text_bytes - text_bytes)
+        size = _check_nesting(child, levels_left=levels_left - 1, room=left)
+        values += size.values
+        text_bytes += size.text_bytes
+    return _Size(values, text_bytes)
+
+
+def _text_bytes(text: str, bytes_left: int) -> int:
+    """The size of ``text`` in UTF-8, if it fits in ``bytes_left``."""
+    # Every character takes at least a byte, so a text with more characters cannot fit:
+    # no need to encode it. Lone surrogates are rejected later, when the whole is encoded.
+    too_long = len(text) > bytes_left
+    size = len(text) if too_long else len(text.encode("utf-8", "surrogatepass"))
+    if size > bytes_left:
+        raise ValidationError(f"metadata must not hold more than {_MAX_TEXT_BYTES:,} bytes of text")
+    return size
 
 
 def _integer(name: str, value: object, *, minimum: int) -> int:
