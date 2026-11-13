@@ -30,6 +30,7 @@ BAD_FIELDS = [
     pytest.param({"metadata": {1: "value"}}, id="number-key-in-metadata"),
     pytest.param({"metadata": nested(101)}, id="too-deep-metadata"),
     pytest.param({"metadata": {"value": 10**5000}}, id="huge-integer-in-metadata"),
+    pytest.param({"metadata": {"value": MAX_INTEGER + 1}}, id="integer-past-64-bits-in-metadata"),
     pytest.param({"metadata": {"value": LONE_SURROGATE}}, id="lone-surrogate-in-metadata"),
     pytest.param({"tags": [""]}, id="empty-tag"),
     pytest.param({"tags": "pref"}, id="tags-as-one-string"),

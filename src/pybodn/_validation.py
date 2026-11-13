@@ -13,6 +13,7 @@ from pybodn._models import JSONValue, NewMemory
 from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
+_MIN_INTEGER = -(2**63)  # the smallest
 
 # How deep Python itself can nest depends on the platform's stack, so data written on
 # one machine could fail to load on another. A fixed limit behaves the same everywhere.
@@ -21,6 +22,8 @@ _MAX_DEPTH = 100
 # Metadata is measured as it would be written out. The same list placed inside itself
 # twice, again and again, looks tiny but writes out as billions of values; one long text
 # placed many times writes out in full each time. 16 MB is what MongoDB allows a document.
+# Integers are held to what SQLite can store, so none of them writes out longer than 20
+# characters.
 _MAX_VALUES = 1_000_000
 _MAX_TEXT_BYTES = 16 * 1024 * 1024
 
@@ -61,7 +64,8 @@ def metadata(value: object) -> dict[str, JSONValue]:
 
     At most 1,000,000 values and 16 MB of text in all, counted as written out: the
     mapping and every list and dict are one value each, keys count as text in UTF-8,
-    and anything placed twice counts twice.
+    and anything placed twice counts twice. Integers must fit in 64 bits, as SQLite
+    stores them.
 
     Non-string keys and tuples are rejected rather than converted, because JSON
     would silently turn ``{1: ...}`` into ``{"1": ...}`` and a tuple into a list.
@@ -148,6 +152,8 @@ def _check_nesting(value: object, *, levels_left: int, room: _Size) -> _Size:
         raise ValidationError("metadata must use lists, not tuples")
     if isinstance(value, str):
         return _Size(1, _text_bytes(value, room.text_bytes))
+    if isinstance(value, int) and not _MIN_INTEGER <= value <= _MAX_INTEGER:
+        raise ValidationError(f"metadata integers must be from {_MIN_INTEGER} to {_MAX_INTEGER}")
     if not isinstance(value, dict | list):
         return _Size(1, 0)  # json.dumps rejects anything that is not a JSON value
     if levels_left == 0:

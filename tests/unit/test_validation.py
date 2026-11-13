@@ -1,7 +1,7 @@
 import math
 import threading
 from collections.abc import Callable
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from fractions import Fraction
 from types import MappingProxyType
 
@@ -12,12 +12,17 @@ from pybodn._models import NewMemory
 from pybodn.errors import ValidationError
 
 MAX_INTEGER = 2**63 - 1
+MIN_INTEGER = -(2**63)
 LONE_SURROGATE = "\ud800"
 WAIT_SECONDS = 10  # a check that never ends fails after this instead of hanging
 
 
 class Color(StrEnum):
     RED = "red"
+
+
+class Huge(IntEnum):
+    PAST_64_BITS = 2**63
 
 
 def circular() -> dict[str, object]:
@@ -268,6 +273,40 @@ def test_metadata_that_reuses_one_long_text_over_and_over_is_rejected(
     # Assert
     assert isinstance(error, ValidationError)
     assert "16,777,216 bytes of text" in str(error)
+
+
+@pytest.mark.parametrize("number", [MIN_INTEGER, MAX_INTEGER])
+def test_metadata_allows_integers_that_fit_in_64_bits(number: int) -> None:
+    assert validate.metadata({"list": [number]}) == {"list": [number]}
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        pytest.param(MIN_INTEGER - 1, id="one-below"),
+        pytest.param(MAX_INTEGER + 1, id="one-above"),
+        pytest.param(10**4000, id="thousands-of-digits"),
+        pytest.param(Huge.PAST_64_BITS, id="int-subclass"),
+    ],
+)
+def test_metadata_rejects_integers_that_do_not_fit_in_64_bits(number: int) -> None:
+    with pytest.raises(
+        ValidationError, match=f"metadata integers must be from {MIN_INTEGER} to {MAX_INTEGER}"
+    ):
+        validate.metadata({"list": [number]})
+
+
+def test_metadata_that_reuses_one_huge_integer_over_and_over_is_rejected() -> None:
+    # Arrange: a few kilobytes in memory, gigabytes once written out in full, and
+    # 1,000,000 values with the dict and the list, so the value limit lets it through
+    value = {"list": [10**4000] * 999_998}
+
+    # Act
+    error = error_within_time_limit(lambda: validate.metadata(value))
+
+    # Assert
+    assert isinstance(error, ValidationError)
+    assert "metadata integers" in str(error)
 
 
 def test_metadata_turns_str_subclasses_into_plain_strs() -> None:
