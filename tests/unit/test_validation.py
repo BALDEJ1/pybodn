@@ -6,6 +6,7 @@ from types import MappingProxyType
 import pytest
 
 from pybodn import _validation as validate
+from pybodn._models import NewMemory
 from pybodn.errors import ValidationError
 
 MAX_INTEGER = 2**63 - 1
@@ -232,3 +233,31 @@ def test_offset_accepts_an_integer_from_zero(value: int) -> None:
 def test_offset_rejects_anything_else(value: object) -> None:
     with pytest.raises(ValidationError, match="offset"):
         validate.offset(value)
+
+
+# expected_version ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [None, 1, MAX_INTEGER])
+def test_expected_version_accepts_none_or_an_integer_from_one(value: int | None) -> None:
+    assert validate.expected_version(value) == value
+
+
+@pytest.mark.parametrize("value", [0, -1, MAX_INTEGER + 1, True, 1.0, "1"])
+def test_expected_version_rejects_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="expected_version"):
+        validate.expected_version(value)
+
+
+# memories ------------------------------------------------------------------------------------
+
+
+def test_memories_become_a_list_from_any_iterable() -> None:
+    batch = (NewMemory(text) for text in ("a", "b"))
+    assert validate.memories(batch) == [NewMemory("a"), NewMemory("b")]
+
+
+@pytest.mark.parametrize("value", [None, 5, "text", [None], [{"content": "text"}]])
+def test_memories_reject_anything_but_new_memories(value: object) -> None:
+    with pytest.raises(ValidationError, match="memories"):
+        validate.memories(value)
