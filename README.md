@@ -32,7 +32,7 @@ with MemoryEngine.sqlite("memory.db") as engine:
 # Python
 ```
 
-The records stay in `memory.db` after the program ends. Every example below runs on its own.
+The records stay in `memory.db` after the program ends. Every example below runs on its own in an empty folder.
 
 ## Engines
 
@@ -47,7 +47,8 @@ the end, or call `close()` yourself. Closing twice is safe; any other call after
 
 Use `in_memory()` for tests and for data you do not need to keep.
 
-`path` is a string or a `pathlib.Path`, and its folder must exist. `":memory:"` as the path
+`path` is a string or a `pathlib.Path`, and its folder must exist, or `StorageError` is raised.
+`":memory:"` as the path
 keeps an SQLite database in memory, gone when the engine closes.
 
 While another process writes to the file, a write waits up to `timeout` seconds, then raises
@@ -104,8 +105,9 @@ copy, never what is stored.
 A key the namespace already has raises `DuplicateKeyError`, and the record with that key stays
 as it was.
 
-`add_many` takes `NewMemory` objects, with the same fields, and adds all of them or none: if one
-is invalid or its key is taken, nothing is written. It returns the records in the order given.
+`add_many(memories)` takes any iterable of `NewMemory`, such as a list or a generator. A
+`NewMemory` has the same fields as `add`. It adds all of them or none: if one is invalid or its
+key is taken, nothing is written. It returns the records in the order given.
 
 ```python
 from pybodn import MemoryEngine, NewMemory
@@ -142,8 +144,8 @@ with MemoryEngine.in_memory() as engine:
 
 `get(id)` and `get_by_key(key)` return the record, or `None` if there is none. `list()` returns
 every record in the order they were added; `put` and `update` keep a record in its place.
-`list(limit=..., offset=...)` returns one page of that list. `count()` returns the number of
-records.
+`list(limit=..., offset=...)` returns one page of that list, and a page past the end is empty.
+`count()` returns the number of records.
 
 ```python
 from pybodn import MemoryEngine, NewMemory
@@ -167,6 +169,10 @@ leave out goes back to its default and does not keep its old value. The record k
 `created_at` and place in `list()`, and its `version` grows by one. Use `put` for facts that
 have one current value, such as a setting.
 
+`put` always writes; it has no `expected_version`. To change a keyed record only if nobody
+changed it since you read it, read it with `get_by_key` and call `update` with
+`expected_version`, as shown under Threads and processes.
+
 ```python
 from pybodn import MemoryEngine
 
@@ -183,10 +189,11 @@ with MemoryEngine.in_memory() as engine:
 
 ### Change some fields: `update`
 
-`update(id, *, content=..., metadata=..., tags=..., importance=..., source=...)` changes only the
-fields you pass, and at least one is required. `source=None` clears the source; `None` for any
-other field raises `ValidationError`. The key cannot be changed: delete the record and `put` it
-under the new key. An id with no record raises `RecordNotFoundError`.
+`update(id, *, expected_version=None, content=..., metadata=..., tags=..., importance=...,
+source=...)` changes only the fields you pass, and at least one is required. `source=None`
+clears the source; `None` for any other field raises `ValidationError`. The key cannot be
+changed: delete the record and `put` it under the new key. An id with no record raises
+`RecordNotFoundError`. `expected_version` is explained under Threads and processes.
 
 ```python
 from pybodn import MemoryEngine
@@ -221,12 +228,11 @@ with MemoryEngine.in_memory() as engine:
 Any number of threads can share one engine. Processes share an SQLite file, each with an engine
 of its own; an `in_memory()` engine is never shared between processes.
 
-- A call that fails writes nothing, `add_many` included.
+- A call that fails writes nothing.
 - A change is seen by every engine on the file as soon as the call returns.
 - `put` and `update` read a record and write it back in one step, so changes to one record made
-  at the same time are applied one after another and none is lost. `version` counts every one.
+  at the same time are applied one after another, never mixed. `version` counts every one.
 - `list()` gives the same order in every engine, and after a restart.
-- A write that waits longer than `timeout` for another process raises `StorageError`.
 
 To change a record only if nobody changed it since you read it, pass the version you read as
 `expected_version` to `update`. If the record has moved on, `update` raises
@@ -257,7 +263,7 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `DuplicateKeyError` | `add` or `add_many` uses a key the namespace already has, or one batch repeats a key |
 | `RecordNotFoundError` | `update` gets an id with no record. Also a `LookupError`. |
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
-| `StorageError` | the storage fails: a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, or another program damaged a record in it. The original error is its `__cause__`. |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, or another program damaged a record in it. The original error is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
 An unknown keyword argument raises `TypeError`, as it does for any Python function.
@@ -278,9 +284,10 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
   are NaN and infinity. It holds at most 100 levels, 1,000,000 values and 16 MB of text, and its
   integers fit in 64 bits, as SQLite stores them.
 - A record keeps a copy of the `metadata` you pass: changing your dict later changes nothing.
-- `limit` is `None` or an integer from 1, and `offset` is an integer from 0.
+- `limit` and `expected_version` are `None` or an integer from 1, and `offset` is an integer
+  from 0. None of them can exceed 2**63 - 1, the largest integer SQLite stores.
 - `path` is a non-empty string or path object without NUL characters, and `timeout` is a number
-  of seconds from 0 to 2,147,483 (about 24 days).
+  of seconds from 0 to 2,147,483 (almost 25 days).
 
 ## The SQLite file
 
@@ -341,7 +348,9 @@ print(index.delete("user:123:language"))  # True
 print(index.delete("user:123:language"))  # False, so deleting twice is safe
 ```
 
-`get` returns `None` both for a missing key and for a stored `None`; use `in` to tell them apart.
+It also has `clear()` and `len(index)`. `get` returns `None` both for a missing key and for a
+stored `None`; use `in` to tell them apart. The index has no lock of its own: if threads share
+it, guard it with one.
 
 ## Development
 
