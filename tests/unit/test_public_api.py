@@ -56,3 +56,22 @@ def test_only_required_parameters_can_be_passed_by_position(
 
     # Assert
     assert by_position == positional
+
+
+@pytest.mark.parametrize(
+    ("factory", "positional"),
+    [(MemoryEngine.in_memory, []), (MemoryEngine.sqlite, ["path"])],
+)
+def test_engine_factories_take_only_required_parameters_by_position(
+    factory: Callable[..., object], positional: list[str]
+) -> None:
+    # Arrange: the class is already bound, so every parameter is the caller's
+    parameters = inspect.signature(factory).parameters.values()
+
+    # Act
+    by_position = [
+        parameter.name for parameter in parameters if parameter.kind != parameter.KEYWORD_ONLY
+    ]
+
+    # Assert
+    assert by_position == positional

@@ -10,10 +10,12 @@ import pytest
 from pybodn import Collection, MemoryEngine
 from pybodn._storage.base import Store
 from pybodn._storage.memory import InMemoryStore
+from pybodn._storage.sqlite import SQLiteStore
 
-# SQLite joins this list in step 3.
+# Each one makes a new, empty store; the path is a folder of its own.
 STORES: dict[str, Callable[[Path], Store]] = {
     "memory": lambda _: InMemoryStore(),
+    "sqlite": lambda folder: SQLiteStore(str(folder / "memory.db"), timeout=5.0),
 }
 
 START = datetime(2026, 11, 13, 9, 55, 0, 123456, tzinfo=UTC)

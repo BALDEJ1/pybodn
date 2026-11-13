@@ -7,8 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from pybodn._models import MemoryRecord
-from pybodn._storage.base import Build, Lookup, ensure_open
-from pybodn.errors import DuplicateKeyError
+from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
 
 
 @dataclass(slots=True)
@@ -47,16 +46,7 @@ class InMemoryStore:
         copies = [_copy(record) for record in records]  # a copy that fails writes nothing
         with self._lock:
             ensure_open(self)
-            used: set[tuple[str, str]] = set()
-            for record in copies:
-                if record.key is None:
-                    continue
-                slot = (record.namespace, record.key)
-                if slot in used or self._find(record.namespace, "key", record.key) is not None:
-                    raise DuplicateKeyError(
-                        f"key {record.key!r} is already used in namespace {record.namespace!r}"
-                    )
-                used.add(slot)
+            reject_stored_keys(copies, self._is_key_stored)
             for record in copies:
                 self._write(record)
 
@@ -108,6 +98,9 @@ class InMemoryStore:
             return None
         record_id = value if by == "id" else space.ids_by_key.get(value)
         return None if record_id is None else space.records.get(record_id)
+
+    def _is_key_stored(self, namespace: str, key: str) -> bool:
+        return self._find(namespace, "key", key) is not None
 
     def _write(self, record: MemoryRecord) -> None:
         """Add ``record`` at the end, or replace the record with its id in place."""

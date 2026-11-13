@@ -6,6 +6,7 @@ Each function takes any value and returns it in its stored form, or raises
 
 import json
 import numbers
+import os
 from collections.abc import Iterable, Mapping
 from typing import NamedTuple
 
@@ -14,6 +15,7 @@ from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
 _MIN_INTEGER = -(2**63)  # the smallest
+_MAX_TIMEOUT = 2_147_483  # seconds: SQLite counts the wait in milliseconds, in a 32-bit integer
 
 # How deep Python itself can nest depends on the platform's stack, so data written on
 # one machine could fail to load on another. A fixed limit behaves the same everywhere.
@@ -116,6 +118,22 @@ def memories(value: object) -> list[NewMemory]:
                 f"memories must contain NewMemory objects, not {type(memory).__name__}"
             )
     return batch
+
+
+def path(value: object) -> str:
+    """A database path: a non-empty string or a path object, as ``str``."""
+    result = text("path", os.fspath(value) if isinstance(value, os.PathLike) else value)
+    if "\x00" in result:
+        raise ValidationError("path must not contain a NUL character")
+    return result
+
+
+def timeout(value: object) -> float:
+    """Seconds to wait, as ``float``: a real number from 0. ``bool`` and NaN are rejected."""
+    number = _as_float(value)
+    if number is None or not 0.0 <= number <= _MAX_TIMEOUT:
+        raise ValidationError(f"timeout must be a number of seconds from 0 to {_MAX_TIMEOUT}")
+    return number
 
 
 def _string(name: str, value: object) -> str:
