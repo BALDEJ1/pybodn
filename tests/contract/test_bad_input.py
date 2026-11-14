@@ -2,6 +2,8 @@
 
 import math
 from collections.abc import Callable
+from datetime import date, datetime, timedelta, timezone
+from fractions import Fraction
 from typing import Any
 
 import pytest
@@ -184,11 +186,65 @@ def test_bad_offset_is_rejected(notes: Collection, offset: Any) -> None:
         notes.list(offset=offset)
 
 
+BAD_FILTERS = [
+    pytest.param({"tags": "health"}, id="tags-as-one-string"),
+    pytest.param({"tags": None}, id="none-tags"),
+    pytest.param({"tags": [""]}, id="empty-tag"),
+    pytest.param({"tags": [1]}, id="number-tag"),
+    pytest.param({"tags": [f"t{n}" for n in range(101)]}, id="too-many-tags"),
+    pytest.param({"metadata": [("topic", "food")]}, id="metadata-not-a-mapping"),
+    pytest.param({"metadata": None}, id="none-metadata"),
+    pytest.param({"metadata": {1: "food"}}, id="number-key"),
+    pytest.param({"metadata": {LONE_SURROGATE: "food"}}, id="lone-surrogate-key"),
+    pytest.param({"metadata": {"topic": ["food"]}}, id="list-value"),
+    pytest.param({"metadata": {"topic": {"a": 1}}}, id="dict-value"),
+    pytest.param({"metadata": {"topic": ("food",)}}, id="tuple-value"),
+    pytest.param({"metadata": {"topic": math.nan}}, id="nan-value"),
+    pytest.param({"metadata": {"topic": math.inf}}, id="infinite-value"),
+    pytest.param({"metadata": {"topic": MAX_INTEGER + 1}}, id="integer-past-64-bits"),
+    pytest.param({"metadata": {"topic": LONE_SURROGATE}}, id="lone-surrogate-value"),
+    pytest.param({"metadata": {"topic": Fraction(1, 2)}}, id="fraction-value"),
+    pytest.param({"metadata": {f"k{n}": n for n in range(101)}}, id="too-many-fields"),
+    pytest.param({"min_importance": math.nan}, id="nan-min-importance"),
+    pytest.param({"min_importance": 1.5}, id="min-importance-above-one"),
+    pytest.param({"min_importance": True}, id="true-min-importance"),
+    pytest.param({"min_importance": None}, id="none-min-importance"),
+    pytest.param({"created_since": datetime(2026, 1, 1)}, id="since-without-a-zone"),
+    pytest.param({"created_since": date(2026, 1, 1)}, id="since-as-a-date"),
+    pytest.param({"created_before": "2026-01-01T00:00:00+00:00"}, id="before-as-text"),
+    pytest.param({"created_before": None}, id="none-before"),
+    pytest.param(
+        {"created_since": datetime.min.replace(tzinfo=timezone(timedelta(hours=5)))},
+        id="since-before-year-1-in-utc",
+    ),
+    pytest.param(
+        {"created_before": datetime.max.replace(tzinfo=timezone(timedelta(hours=-5)))},
+        id="before-after-year-9999-in-utc",
+    ),
+]
+
+
+@pytest.mark.parametrize("filters", BAD_FILTERS)
+@pytest.mark.parametrize("method", ["list", "count"])
+def test_bad_filters_are_rejected_and_named(
+    notes: Collection, method: str, filters: dict[str, Any]
+) -> None:
+    # Arrange
+    (name,) = filters
+    word = name.removesuffix("s")  # a bad tag is named "tag"
+
+    # Act / Assert
+    with pytest.raises(ValidationError, match=word):
+        getattr(notes, method)(**filters)
+
+
 # Like any Python function, a misspelled keyword is a TypeError that names the method called.
 UNKNOWN_FIELD: dict[str, Callable[[Collection], object]] = {
     "add": lambda notes: notes.add("Python", colour="red"),  # type: ignore[call-arg]
     "put": lambda notes: notes.put("language", "Python", colour="red"),  # type: ignore[call-arg]
     "update": lambda notes: notes.update(notes.add("Python").id, colour="red"),  # type: ignore[call-arg]
+    "list": lambda notes: notes.list(colour="red"),  # type: ignore[call-arg]
+    "count": lambda notes: notes.count(colour="red"),  # type: ignore[call-arg]
 }
 
 

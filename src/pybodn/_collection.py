@@ -9,6 +9,7 @@ from typing import Any, TypedDict, Unpack
 from uuid import uuid4
 
 from pybodn import _validation as validate
+from pybodn._filter import Filter, Filters, checked
 from pybodn._models import JSONValue, MemoryRecord, NewMemory
 from pybodn._storage.base import Store, ensure_open
 from pybodn.errors import (
@@ -155,16 +156,32 @@ class Collection:
         ensure_open(self._store)
         return self._store.delete(self._namespace, validate.text("id", id))
 
-    def list(self, *, limit: int | None = None, offset: int = 0) -> builtins.list[MemoryRecord]:
-        """Records in the order they were added. ``limit`` and ``offset`` select a page."""
+    def list(
+        self, *, limit: int | None = None, offset: int = 0, **filters: Unpack[Filters]
+    ) -> builtins.list[MemoryRecord]:
+        """Records in the order they were added. ``limit`` and ``offset`` select a page.
+
+        Filters keep only the records that pass every one given:
+
+        - ``tags``: has every one of these tags, at most 100;
+        - ``metadata``: each of these top-level fields, at most 100, is there and equals its
+          value, as JSON compares them: ``True`` is not ``1``, ``1`` is ``1.0``, and
+          ``None`` is a field set to ``None``, not a missing one;
+        - ``min_importance``: importance at least this;
+        - ``created_since`` and ``created_before``: created at or after, and before, these
+          moments, each a ``datetime`` with a time zone.
+        """
         ensure_open(self._store)
+        checked_limit, checked_offset = validate.limit(limit), validate.offset(offset)
+        where = _check_filters("list", filters)
         return self._store.list(
-            self._namespace, limit=validate.limit(limit), offset=validate.offset(offset)
+            self._namespace, where=where, limit=checked_limit, offset=checked_offset
         )
 
-    def count(self) -> int:
-        """The number of records."""
-        return self._store.count(self._namespace)
+    def count(self, **filters: Unpack[Filters]) -> int:
+        """The number of records, or of those that pass the filters, as ``list`` takes them."""
+        ensure_open(self._store)
+        return self._store.count(self._namespace, where=_check_filters("count", filters))
 
 
 def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:
@@ -188,6 +205,11 @@ def _reject_unknown(method: str, fields: Mapping[str, object], known: frozenset[
     unknown = sorted(fields.keys() - known)
     if unknown:
         raise TypeError(f"{method}() got an unexpected keyword argument {unknown[0]!r}")
+
+
+def _check_filters(method: str, filters: Mapping[str, object]) -> Filter:
+    _reject_unknown(method, filters, Filters.__optional_keys__)
+    return checked(filters)
 
 
 def _check_changes(changes: Mapping[str, object]) -> dict[str, Any]:

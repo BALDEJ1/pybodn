@@ -5,12 +5,14 @@ Each function takes any value and returns it in its stored form, or raises
 """
 
 import json
+import math
 import numbers
 import os
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from typing import NamedTuple
 
-from pybodn._models import JSONValue, NewMemory
+from pybodn._models import JSONScalar, JSONValue, NewMemory
 from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
@@ -28,6 +30,10 @@ _MAX_DEPTH = 100
 # characters.
 _MAX_VALUES = 1_000_000
 _MAX_TEXT_BYTES = 16 * 1024 * 1024
+
+# Each tag and each metadata field of a filter becomes a condition of its own, and SQLite
+# refuses a query nested 1,000 deep. No real filter comes near this many.
+_MAX_FILTER_ITEMS = 100
 
 
 class _Size(NamedTuple):
@@ -53,11 +59,11 @@ def source(value: object) -> str | None:
     return None if value is None else _string("source", value)
 
 
-def importance(value: object) -> float:
+def importance(value: object, *, name: str = "importance") -> float:
     """A real number from 0 to 1, as ``float``. ``bool`` and NaN are rejected."""
     number = _as_float(value)
     if number is None or not 0.0 <= number <= 1.0:  # NaN fails the range check too
-        raise ValidationError("importance must be a number from 0 to 1")
+        raise ValidationError(f"{name} must be a number from 0 to 1")
     return abs(number)  # SQLite reads -0.0 back as 0.0
 
 
@@ -90,6 +96,39 @@ def tags(value: object) -> tuple[str, ...]:
     if isinstance(value, str) or not isinstance(value, Iterable):
         raise ValidationError("tags must be a list of strings")
     return tuple(dict.fromkeys(text("tag", tag) for tag in value))
+
+
+def tag_filter(value: object) -> tuple[str, ...]:
+    """Tags to filter by: what ``tags`` takes, at most 100 of them."""
+    result = tags(value)
+    if len(result) > _MAX_FILTER_ITEMS:
+        raise ValidationError(f"tags must not hold more than {_MAX_FILTER_ITEMS} tags to match")
+    return result
+
+
+def metadata_values(value: object) -> tuple[tuple[str, JSONScalar], ...]:
+    """Top-level metadata fields, each with the value it must equal, in the order given.
+
+    At most 100 fields. A value is a string, ``True``, ``False``, ``None``, or a number
+    metadata can hold: a finite float or an integer that fits in 64 bits.
+    """
+    if not isinstance(value, Mapping):
+        raise ValidationError(f"metadata must be a mapping, not {type(value).__name__}")
+    if len(value) > _MAX_FILTER_ITEMS:
+        raise ValidationError(
+            f"metadata must not hold more than {_MAX_FILTER_ITEMS} fields to match"
+        )
+    return tuple((_string("metadata key", key), _scalar(item)) for key, item in value.items())
+
+
+def moment(name: str, value: object) -> datetime:
+    """A ``datetime`` with a time zone, as the same moment in UTC."""
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise ValidationError(f"{name} must be a datetime with a time zone")
+    try:
+        return value.astimezone(UTC)
+    except OverflowError:  # the moment falls before year 1 or after year 9999 in UTC
+        raise ValidationError(f"{name} must fall within years 1 to 9999 in UTC") from None
 
 
 def limit(value: object) -> int | None:
@@ -156,6 +195,22 @@ def _as_float(value: object) -> float | None:
         return float(value)
     except OverflowError:  # an integer too large for a float
         return None
+
+
+def _scalar(value: object) -> JSONScalar:
+    """A metadata value to match, as a plain ``str``, ``int`` or ``float``, or itself."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return _string("metadata value", value)
+    if isinstance(value, int) and _MIN_INTEGER <= value <= _MAX_INTEGER:
+        return int(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return float(value)
+    raise ValidationError(
+        "metadata values to match must be text, True, False, None, a finite float or an"
+        f" integer that fits in 64 bits, not {value!r:.40}"
+    )
 
 
 def _check_nesting(value: object, *, levels_left: int, room: _Size) -> _Size:

@@ -10,13 +10,15 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from pybodn._models import MemoryRecord
+from pybodn._filter import Filter
+from pybodn._models import JSONScalar, MemoryRecord
 from pybodn._storage import schema
 from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
 from pybodn.errors import StorageError
 
 # The columns of a record; seq, the order of insertion, SQLite fills in itself. Every query
-# is built from this list once, here: no value or outside text is ever pasted into one.
+# is built from this list and the fixed pieces below: no value or outside text is ever
+# pasted into one.
 _COLUMNS = (
     "id",
     "namespace",
@@ -35,7 +37,6 @@ _SELECT_BY: dict[Lookup, str] = {
     "id": f"{_SELECT} AND id = ?",
     "key": f"{_SELECT} AND memory_key = ?",
 }
-_SELECT_PAGE = f"{_SELECT} ORDER BY seq LIMIT ? OFFSET ?"
 _INSERT = (
     f"INSERT INTO memories ({', '.join(_COLUMNS)})"  # noqa: S608
     f" VALUES ({', '.join(f':{column}' for column in _COLUMNS)})"
@@ -45,10 +46,22 @@ _REPLACE = (
     " WHERE id = :current_id"
 )
 _COUNT = "SELECT count(*) FROM memories WHERE namespace = ?"
+_PAGE = " ORDER BY seq LIMIT ? OFFSET ?"
 _KEY_USED = "SELECT 1 FROM memories WHERE namespace = ? AND memory_key = ?"
 _DELETE = "DELETE FROM memories WHERE namespace = ? AND id = ?"
 _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
 _PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
+
+# What each filter adds to a query's WHERE, with its values passed apart. A metadata field
+# is found by its name, never by a path, and the JSON type keeps True apart from 1.
+_HAS_TAG = " AND EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value = ?)"
+_HAS_FIELD = " AND EXISTS (SELECT 1 FROM json_each(metadata_json) WHERE key = ? AND "
+_FIELD_OF_TYPE = f"{_HAS_FIELD}type = ?)"  # null, true or false: the type is the value
+_FIELD_IS_TEXT = f"{_HAS_FIELD}type = 'text' AND value = ?)"
+_FIELD_IS_NUMBER = f"{_HAS_FIELD}type IN ('integer', 'real') AND value = ?)"
+_MIN_IMPORTANCE = " AND importance >= ?"
+_CREATED_SINCE = " AND created_at >= ?"
+_CREATED_BEFORE = " AND created_at < ?"
 
 
 class SQLiteStore:
@@ -124,20 +137,23 @@ class SQLiteStore:
         return deleted > 0
 
     def list(
-        self, namespace: str, *, limit: int | None, offset: int
+        self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
-        page = (namespace, _NO_LIMIT if limit is None else limit, offset)
+        conditions, values = _conditions(where)
+        sql = f"{_SELECT}{conditions}{_PAGE}"  # noqa: S608 - fixed pieces only
+        page = (namespace, *values, _NO_LIMIT if limit is None else limit, offset)
         with self._lock:
             ensure_open(self)
             with _storage_errors():
-                rows = self._connection.execute(_SELECT_PAGE, page).fetchall()
+                rows = self._connection.execute(sql, page).fetchall()
                 return [_record(row) for row in rows]
 
-    def count(self, namespace: str) -> int:
+    def count(self, namespace: str, *, where: Filter) -> int:
+        conditions, values = _conditions(where)
         with self._lock:
             ensure_open(self)
             with _storage_errors():
-                count: int = _single(self._connection, _COUNT, (namespace,))
+                count: int = _single(self._connection, _COUNT + conditions, (namespace, *values))
         return count
 
     def close(self) -> None:
@@ -216,10 +232,44 @@ def _use_write_ahead_log(connection: sqlite3.Connection, timeout: float) -> None
             return
 
 
-def _single(connection: sqlite3.Connection, sql: str, parameters: tuple[str, ...] = ()) -> Any:
+def _single(connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = ()) -> Any:
     """The one value the query returns."""
     ((value,),) = connection.execute(sql, parameters).fetchall()
     return value
+
+
+def _conditions(where: Filter) -> tuple[str, tuple[object, ...]]:
+    """What ``where`` adds to a query's WHERE, and the values it needs, in order."""
+    sql: list[str] = []
+    values: list[object] = []
+    for tag in where.tags:
+        sql.append(_HAS_TAG)
+        values.append(tag)
+    for key, value in where.metadata:
+        piece, piece_values = _field_is(key, value)
+        sql.append(piece)
+        values.extend(piece_values)
+    if where.min_importance is not None:
+        sql.append(_MIN_IMPORTANCE)
+        values.append(where.min_importance)
+    if where.created_since is not None:
+        sql.append(_CREATED_SINCE)
+        values.append(_write_time(where.created_since))
+    if where.created_before is not None:
+        sql.append(_CREATED_BEFORE)
+        values.append(_write_time(where.created_before))
+    return "".join(sql), tuple(values)
+
+
+def _field_is(key: str, value: JSONScalar) -> tuple[str, tuple[object, ...]]:
+    """The condition that metadata field ``key`` equals ``value``, and the values it needs."""
+    if value is None:
+        return _FIELD_OF_TYPE, (key, "null")
+    if isinstance(value, bool):
+        return _FIELD_OF_TYPE, (key, "true" if value else "false")
+    if isinstance(value, str):
+        return _FIELD_IS_TEXT, (key, value)
+    return _FIELD_IS_NUMBER, (key, value)
 
 
 def _row(record: MemoryRecord) -> dict[str, object]:
