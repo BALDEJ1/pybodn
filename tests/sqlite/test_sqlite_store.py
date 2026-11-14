@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from pybodn import MemoryEngine
+from pybodn import MemoryEngine, MemoryRecord
 from pybodn._storage.sqlite import SQLiteStore, _use_write_ahead_log
 from pybodn.errors import StorageError
 from tests.sqlite.support import RELEASE_AFTER, SHORT_WAIT, WAIT_SECONDS, another_writer
@@ -60,6 +60,24 @@ def test_a_failed_commit_writes_nothing_and_leaves_the_store_usable(
         assert notes.count() == 0
         notes.add("Prefers Python")
         assert notes.count() == 1
+
+
+def interrupt(current: MemoryRecord | None) -> MemoryRecord:
+    raise KeyboardInterrupt  # as Ctrl-C would, in the middle of a change
+
+
+def test_an_interrupted_change_is_rolled_back_and_leaves_the_file_free(path: Path) -> None:
+    # Arrange
+    store = SQLiteStore(str(path), timeout=SHORT_WAIT)
+
+    # Act
+    with pytest.raises(KeyboardInterrupt):
+        store.modify("user:123", "key", "language", interrupt)
+
+    # Assert
+    with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as other:
+        other.collection("user:123").add("Likes tea")  # times out if the file is still locked
+    store.close()
 
 
 def test_the_switch_to_the_log_waits_for_another_writer(path: Path) -> None:

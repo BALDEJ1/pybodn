@@ -2,7 +2,8 @@ from collections.abc import Callable
 
 import pytest
 
-from pybodn import Collection, MemoryEngine, NewMemory
+from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
+from pybodn._storage.base import Store
 from pybodn.errors import EngineClosedError
 
 MISSING_ID = "0" * 32
@@ -43,6 +44,34 @@ def test_every_action_after_close_raises_engine_closed_error(
     # Act / Assert
     with pytest.raises(EngineClosedError):
         action(notes)
+
+
+def never_build(current: MemoryRecord | None) -> MemoryRecord:
+    pytest.fail("a closed store must not build a record")
+
+
+# A call that races close() gets past the engine's own check, so the store checks again.
+STORE_CALLS: dict[str, Callable[[Store], object]] = {
+    "get": lambda store: store.get("user:123", "id", MISSING_ID),
+    "insert": lambda store: store.insert([]),
+    "modify": lambda store: store.modify("user:123", "id", MISSING_ID, never_build),
+    "delete": lambda store: store.delete("user:123", MISSING_ID),
+    "list": lambda store: store.list("user:123", limit=None, offset=0),
+    "count": lambda store: store.count("user:123"),
+}
+
+
+@pytest.mark.parametrize("call", STORE_CALLS.values(), ids=STORE_CALLS.keys())
+def test_every_store_call_after_close_raises_engine_closed_error(
+    engine: MemoryEngine, call: Callable[[Store], object]
+) -> None:
+    # Arrange
+    store = engine._store
+    engine.close()
+
+    # Act / Assert
+    with pytest.raises(EngineClosedError):
+        call(store)
 
 
 @pytest.mark.parametrize("namespace", ["user:123", ""])
