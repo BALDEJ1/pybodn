@@ -15,23 +15,26 @@ from pybodn._models import JSONScalar, JSONValue, MemoryRecord
 
 
 class Filters(TypedDict, total=False):
-    """The filters, passed by name. A record is kept only if it passes every one given."""
+    """The filters, passed by name. A record is kept only if it passes every one given.
 
-    tags: Sequence[str]
-    metadata: Mapping[str, JSONScalar]
-    min_importance: float
-    created_since: datetime
-    created_before: datetime
+    ``None`` sets no condition, as leaving the filter out does.
+    """
+
+    tags: Sequence[str] | None
+    metadata: Mapping[str, JSONScalar] | None
+    min_importance: float | None
+    created_since: datetime | None
+    created_before: datetime | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Filter:
-    """Checked filters. The defaults keep every record."""
+    """Checked filters, times in UTC. The defaults keep every record."""
 
     tags: tuple[str, ...] = ()
     metadata: tuple[tuple[str, JSONScalar], ...] = ()
     min_importance: float | None = None
-    created_since: datetime | None = None  # in UTC, as is created_before
+    created_since: datetime | None = None
     created_before: datetime | None = None
 
     def matches(self, record: MemoryRecord) -> bool:
@@ -60,11 +63,14 @@ _CHECKS: dict[str, Callable[[object], Any]] = {
 }
 
 
-def checked(filters: Mapping[str, object]) -> Filter:
-    """``filters`` checked, as a ``Filter``. Rejecting an unknown name is the caller's job."""
-    return Filter(
-        **{name: check(filters[name]) for name, check in _CHECKS.items() if name in filters}
-    )
+def checked(method: str, filters: Mapping[str, object]) -> Filter:
+    """``filters``, as passed to ``method``, checked into a ``Filter``.
+
+    An unknown name raises ``TypeError``; a filter set to ``None`` is left out.
+    """
+    validate.reject_unknown(method, filters, Filters.__optional_keys__)
+    given = {name: value for name, value in filters.items() if value is not None}
+    return Filter(**{name: check(given[name]) for name, check in _CHECKS.items() if name in given})
 
 
 def _equal(stored: JSONValue, wanted: JSONScalar) -> bool:

@@ -1,7 +1,7 @@
 import math
 import threading
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from enum import IntEnum, StrEnum
 from fractions import Fraction
 from pathlib import Path
@@ -30,6 +30,19 @@ class Huge(IntEnum):
 
 class Level(IntEnum):
     HIGH = 5
+
+
+class DayAhead(tzinfo):
+    """A broken time zone: Python allows offsets of less than a day only."""
+
+    def utcoffset(self, moment: datetime | None) -> timedelta:
+        return timedelta(hours=24)
+
+    def dst(self, moment: datetime | None) -> timedelta:
+        return timedelta(0)
+
+    def tzname(self, moment: datetime | None) -> str:
+        return "a day ahead"
 
 
 class Unencodable(str):
@@ -502,6 +515,7 @@ def test_moment_returns_the_same_moment_in_utc(value: datetime) -> None:
         pytest.param(
             datetime.max.replace(tzinfo=timezone(timedelta(hours=-5))), id="after-year-9999"
         ),
+        pytest.param(datetime(2026, 11, 14, tzinfo=DayAhead()), id="offset-of-a-day"),
     ],
 )
 def test_moment_rejects_anything_else_and_names_the_field(value: object) -> None:

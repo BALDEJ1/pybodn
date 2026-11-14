@@ -31,8 +31,9 @@ _MAX_DEPTH = 100
 _MAX_VALUES = 1_000_000
 _MAX_TEXT_BYTES = 16 * 1024 * 1024
 
-# Each tag and each metadata field of a filter becomes a condition of its own, and SQLite
-# refuses a query nested 1,000 deep. No real filter comes near this many.
+# Each tag and each metadata field of a filter is a condition of its own in one SQL
+# expression, and SQLite refuses an expression more than 1,000 levels deep. No real filter
+# comes near this many.
 _MAX_FILTER_ITEMS = 100
 
 
@@ -123,12 +124,22 @@ def metadata_values(value: object) -> tuple[tuple[str, JSONScalar], ...]:
 
 def moment(name: str, value: object) -> datetime:
     """A ``datetime`` with a time zone, as the same moment in UTC."""
-    if not isinstance(value, datetime) or value.utcoffset() is None:
-        raise ValidationError(f"{name} must be a datetime with a time zone")
+    cause: Exception | None = None
     try:
-        return value.astimezone(UTC)
-    except OverflowError:  # the moment falls before year 1 or after year 9999 in UTC
-        raise ValidationError(f"{name} must fall within years 1 to 9999 in UTC") from None
+        if isinstance(value, datetime) and value.utcoffset() is not None:
+            return value.astimezone(UTC)
+    except (ValueError, OverflowError) as error:  # a broken time zone, or no such UTC moment
+        cause = error
+    raise ValidationError(
+        f"{name} must be a datetime with a time zone, within years 1 to 9999 in UTC"
+    ) from cause
+
+
+def reject_unknown(method: str, given: Mapping[str, object], known: frozenset[str]) -> None:
+    """Raise the ``TypeError`` Python raises for a keyword a function does not take."""
+    unknown = sorted(given.keys() - known)
+    if unknown:
+        raise TypeError(f"{method}() got an unexpected keyword argument {unknown[0]!r}")
 
 
 def limit(value: object) -> int | None:
@@ -203,7 +214,7 @@ def _scalar(value: object) -> JSONScalar:
         return value
     if isinstance(value, str):
         return _string("metadata value", value)
-    if isinstance(value, int) and _MIN_INTEGER <= value <= _MAX_INTEGER:
+    if isinstance(value, int) and _fits_64_bits(value):
         return int(value)
     if isinstance(value, float) and math.isfinite(value):
         return float(value)
@@ -211,6 +222,11 @@ def _scalar(value: object) -> JSONScalar:
         "metadata values to match must be text, True, False, None, a finite float or an"
         f" integer that fits in 64 bits, not {value!r:.40}"
     )
+
+
+def _fits_64_bits(number: int) -> bool:
+    """Whether SQLite can store ``number`` as an integer."""
+    return _MIN_INTEGER <= number <= _MAX_INTEGER
 
 
 def _check_nesting(value: object, *, levels_left: int, room: _Size) -> _Size:
@@ -225,7 +241,7 @@ def _check_nesting(value: object, *, levels_left: int, room: _Size) -> _Size:
         raise ValidationError("metadata must use lists, not tuples")
     if isinstance(value, str):
         return _Size(1, _text_bytes(value, room.text_bytes))
-    if isinstance(value, int) and not _MIN_INTEGER <= value <= _MAX_INTEGER:
+    if isinstance(value, int) and not _fits_64_bits(value):
         raise ValidationError(f"metadata integers must be from {_MIN_INTEGER} to {_MAX_INTEGER}")
     if not isinstance(value, dict | list):
         return _Size(1, 0)  # json.dumps rejects anything that is not a JSON value

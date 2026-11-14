@@ -33,6 +33,7 @@ def test_tags_keep_the_records_that_have_every_tag(notes: Collection) -> None:
     # Act / Assert
     assert kept(notes, tags=["food", "health"]) == ["both", "both-and-more"]
     assert kept(notes, tags=["health"]) == ["both", "one", "both-and-more"]
+    assert kept(notes, tags=("health", "food", "health")) == ["both", "both-and-more"]
 
 
 def test_no_tags_set_no_condition(notes: Collection) -> None:
@@ -52,6 +53,8 @@ def test_no_tags_set_no_condition(notes: Collection) -> None:
         pytest.param("health", "healt", id="shorter"),
         pytest.param(" health", "health", id="leading-space"),
         pytest.param("50%Xoff", "50%_off", id="wildcards-are-plain-characters"),
+        pytest.param("x", "x' OR '1'='1", id="sql-is-plain-text"),
+        pytest.param('a"b', "a'b", id="quotes-are-plain-characters"),
     ],
 )
 def test_a_tag_matches_only_the_same_whole_tag(notes: Collection, stored: str, wanted: str) -> None:
@@ -71,10 +74,15 @@ def test_a_tag_matches_only_the_same_whole_tag(notes: Collection, stored: str, w
         pytest.param("food", "food", True, id="same-text"),
         pytest.param("food", "Food", False, id="other-case"),
         pytest.param("", "", True, id="empty-text"),
+        pytest.param("a\"b'c", "a\"b'c", True, id="text-with-quotes"),
+        pytest.param("x", "x' OR '1'='1", False, id="sql-is-plain-text"),
         pytest.param(1, 1, True, id="same-integer"),
         pytest.param(1, 1.0, True, id="integer-and-equal-float"),
         pytest.param(1.0, 1, True, id="float-and-equal-integer"),
         pytest.param(2.5, 2.5, True, id="same-float"),
+        pytest.param(0.1 + 0.2, 0.1 + 0.2, True, id="float-with-many-digits"),
+        pytest.param(0.1 + 0.2, 0.3, False, id="float-one-bit-apart"),
+        pytest.param(1e22, 1e22, True, id="large-float"),
         pytest.param(-0.0, 0, True, id="negative-zero-and-zero"),
         pytest.param(MAX_INTEGER, MAX_INTEGER, True, id="largest-integer"),
         pytest.param(2**53 + 1, float(2**53), False, id="integer-and-nearest-float"),
@@ -170,6 +178,15 @@ def test_min_importance_keeps_the_records_at_or_above_it(notes: Collection) -> N
     assert kept(notes, min_importance=1) == ["1.0"]
 
 
+def test_min_importance_sees_the_importance_as_it_is_now(notes: Collection) -> None:
+    # Arrange
+    record = notes.add("raised", importance=0.1)
+    notes.update(record.id, importance=0.9)
+
+    # Act / Assert
+    assert kept(notes, min_importance=0.5) == ["raised"]
+
+
 # creation time -------------------------------------------------------------------------------
 
 
@@ -205,14 +222,26 @@ def test_a_time_in_another_zone_means_the_same_moment(notes: Collection) -> None
 
     # Act / Assert
     assert kept(notes, created_since=second.created_at.astimezone(PLUS_FIVE)) == ["b"]
+    assert kept(notes, created_before=second.created_at.astimezone(PLUS_FIVE)) == ["a"]
 
 
-def test_since_after_before_keeps_nothing(notes: Collection) -> None:
+def test_since_after_before_keeps_nothing_and_is_not_an_error(notes: Collection) -> None:
     # Arrange
-    record = notes.add("a")
+    moment = notes.add("a").created_at
 
     # Act / Assert
-    assert kept(notes, created_since=record.created_at, created_before=record.created_at) == []
+    assert kept(notes, created_since=moment + MICROSECOND, created_before=moment) == []
+    assert kept(notes, created_since=moment, created_before=moment) == []
+
+
+def test_creation_time_filters_ignore_later_changes(notes: Collection) -> None:
+    # Arrange
+    record = notes.add("changed")
+    changed = notes.update(record.id, content="changed again")
+
+    # Act / Assert
+    assert kept(notes, created_before=changed.updated_at) == ["changed again"]
+    assert kept(notes, created_since=record.created_at + MICROSECOND) == []
 
 
 def test_the_earliest_and_latest_times_are_accepted(notes: Collection) -> None:
@@ -234,6 +263,18 @@ def test_a_batch_shares_one_creation_time(notes: Collection) -> None:
 
 
 # together ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["tags", "metadata", "min_importance", "created_since", "created_before"]
+)
+def test_none_sets_no_condition(notes: Collection, name: str) -> None:
+    # Arrange
+    notes.add("a")
+    notes.add("b", tags=["health"], metadata={"field": None}, importance=1.0)
+
+    # Act / Assert
+    assert kept(notes, **{name: None}) == ["a", "b"]
 
 
 def test_every_filter_given_must_pass(notes: Collection) -> None:

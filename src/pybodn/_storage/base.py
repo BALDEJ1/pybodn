@@ -56,14 +56,14 @@ class Store(Protocol):
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
-        """The records ``where`` keeps, in the order they were added: skip ``offset``,
-        return up to ``limit``.
+        """The records ``where`` keeps, in the order added: skip ``offset``, return ``limit``.
 
-        ``limit=None`` returns all the rest.
+        ``where`` keeps exactly the records for which ``where.matches(record)`` is true; how
+        the store finds them is its own business. ``limit=None`` returns all the rest.
         """
 
     def count(self, namespace: str, *, where: Filter) -> int:
-        """The number of records in ``namespace`` that ``where`` keeps."""
+        """The number of records in ``namespace`` that ``where`` keeps, as ``list`` does."""
 
     def close(self) -> None:
         """Release the storage. Safe to call again."""

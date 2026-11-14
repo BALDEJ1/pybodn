@@ -53,12 +53,19 @@ _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
 _PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
 
 # What each filter adds to a query's WHERE, with its values passed apart. A metadata field
-# is found by its name, never by a path, and the JSON type keeps True apart from 1.
+# is found by its name, never by a path, and its JSON type keeps True apart from 1.
 _HAS_TAG = " AND EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value = ?)"
-_HAS_FIELD = " AND EXISTS (SELECT 1 FROM json_each(metadata_json) WHERE key = ? AND "
-_FIELD_OF_TYPE = f"{_HAS_FIELD}type = ?)"  # null, true or false: the type is the value
-_FIELD_IS_TEXT = f"{_HAS_FIELD}type = 'text' AND value = ?)"
-_FIELD_IS_NUMBER = f"{_HAS_FIELD}type IN ('integer', 'real') AND value = ?)"
+_FIELD_OF_TYPE = (  # for null, true and false the JSON type alone says the value
+    " AND EXISTS (SELECT 1 FROM json_each(metadata_json) WHERE key = ? AND type = ?)"
+)
+_FIELD_IS_TEXT = (
+    " AND EXISTS (SELECT 1 FROM json_each(metadata_json)"
+    " WHERE key = ? AND type = 'text' AND value = ?)"
+)
+_FIELD_IS_NUMBER = (
+    " AND EXISTS (SELECT 1 FROM json_each(metadata_json)"
+    " WHERE key = ? AND type IN ('integer', 'real') AND value = ?)"
+)
 _MIN_IMPORTANCE = " AND importance >= ?"
 _CREATED_SINCE = " AND created_at >= ?"
 _CREATED_BEFORE = " AND created_at < ?"
