@@ -6,6 +6,9 @@ from datetime import datetime
 
 type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
 
+# A JSON value that holds no other: what a metadata filter compares a field with.
+type JSONScalar = str | int | float | bool | None
+
 
 @dataclass(frozen=True, slots=True)
 class NewMemory:

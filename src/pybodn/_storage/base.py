@@ -12,6 +12,7 @@ import builtins
 from collections.abc import Callable, Iterable, Sequence
 from typing import Literal, Protocol
 
+from pybodn._filter import Filter
 from pybodn._models import MemoryRecord
 from pybodn.errors import DuplicateKeyError, EngineClosedError
 
@@ -53,15 +54,16 @@ class Store(Protocol):
         """Remove the record. ``False`` if there was none."""
 
     def list(
-        self, namespace: str, *, limit: int | None, offset: int
+        self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
-        """Records in the order they were added: skip ``offset``, return up to ``limit``.
+        """The records ``where`` keeps, in the order they were added: skip ``offset``,
+        return up to ``limit``.
 
         ``limit=None`` returns all the rest.
         """
 
-    def count(self, namespace: str) -> int:
-        """The number of records in ``namespace``."""
+    def count(self, namespace: str, *, where: Filter) -> int:
+        """The number of records in ``namespace`` that ``where`` keeps."""
 
     def close(self) -> None:
         """Release the storage. Safe to call again."""

@@ -3,6 +3,7 @@ from collections.abc import Callable
 import pytest
 
 from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
+from pybodn._filter import EVERYTHING
 from pybodn._storage.base import Store
 from pybodn.errors import EngineClosedError
 
@@ -30,6 +31,9 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "update-with-unknown-field": lambda notes: notes.update(MISSING_ID, key="k"),  # type: ignore[call-arg]
     "delete-with-bad-id": lambda notes: notes.delete(""),
     "list-with-bad-limit": lambda notes: notes.list(limit=0),
+    "list-with-bad-filter": lambda notes: notes.list(min_importance=2),
+    "count-with-bad-filter": lambda notes: notes.count(tags="health"),
+    "count-with-unknown-filter": lambda notes: notes.count(colour="red"),  # type: ignore[call-arg]
 }
 
 
@@ -56,8 +60,8 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "insert": lambda store: store.insert([]),
     "modify": lambda store: store.modify("user:123", "id", MISSING_ID, never_build),
     "delete": lambda store: store.delete("user:123", MISSING_ID),
-    "list": lambda store: store.list("user:123", limit=None, offset=0),
-    "count": lambda store: store.count("user:123"),
+    "list": lambda store: store.list("user:123", where=EVERYTHING, limit=None, offset=0),
+    "count": lambda store: store.count("user:123", where=EVERYTHING),
 }
 
 

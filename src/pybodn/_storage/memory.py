@@ -6,6 +6,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
+from pybodn._filter import EVERYTHING, Filter
 from pybodn._models import MemoryRecord
 from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
 
@@ -71,26 +72,32 @@ class InMemoryStore:
             return True
 
     def list(
-        self, namespace: str, *, limit: int | None, offset: int
+        self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
         with self._lock:
             ensure_open(self)
-            space = self._namespaces.get(namespace)
-            if space is None:
-                return []
             stop = None if limit is None else offset + limit
-            return [_copy(record) for record in [*space.records.values()][offset:stop]]
+            return [_copy(record) for record in self._kept(namespace, where)[offset:stop]]
 
-    def count(self, namespace: str) -> int:
+    def count(self, namespace: str, *, where: Filter) -> int:
         with self._lock:
             ensure_open(self)
-            space = self._namespaces.get(namespace)
-            return 0 if space is None else len(space.records)
+            return len(self._kept(namespace, where))
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
             self._namespaces.clear()
+
+    def _kept(self, namespace: str, where: Filter) -> builtins.list[MemoryRecord]:
+        """The records of ``namespace`` that ``where`` keeps, in the order added, uncopied."""
+        space = self._namespaces.get(namespace)
+        if space is None:
+            return []
+        records = space.records.values()
+        if where == EVERYTHING:  # no filter to run each record through
+            return [*records]
+        return [record for record in records if where.matches(record)]
 
     def _find(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         space = self._namespaces.get(namespace)

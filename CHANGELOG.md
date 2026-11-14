@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Filters for `list` and `count`, passed by name: `tags` (has every tag), `metadata` (each top-level field is there and equals its value, as JSON compares them: `True` is not `1`, and `None` is a field set to `None`), `min_importance`, and `created_since` and `created_before` (moments with a time zone). A record is kept only if it passes every filter given, and `limit` and `offset` page through the records kept.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added

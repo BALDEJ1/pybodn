@@ -1,6 +1,7 @@
 import math
 import threading
 from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta, timezone
 from enum import IntEnum, StrEnum
 from fractions import Fraction
 from pathlib import Path
@@ -25,6 +26,10 @@ class Color(StrEnum):
 
 class Huge(IntEnum):
     PAST_64_BITS = 2**63
+
+
+class Level(IntEnum):
+    HIGH = 5
 
 
 class Unencodable(str):
@@ -382,6 +387,131 @@ def test_tags_are_plain_strs() -> None:
 def test_tags_reject_anything_else(value: object) -> None:
     with pytest.raises(ValidationError, match="tag"):
         validate.tags(value)
+
+
+def test_a_tag_filter_takes_up_to_100_tags_counted_without_duplicates() -> None:
+    # Arrange
+    hundred = [f"t{number}" for number in range(100)]
+
+    # Act / Assert
+    assert validate.tag_filter(hundred + hundred) == tuple(hundred)
+    with pytest.raises(ValidationError, match="^tags must not hold more than 100 "):
+        validate.tag_filter([*hundred, "one-more"])
+
+
+def test_a_tag_filter_checks_its_tags_as_tags_does() -> None:
+    with pytest.raises(ValidationError, match="tag"):
+        validate.tag_filter([""])
+
+
+# metadata values to match --------------------------------------------------------------------
+
+
+def test_metadata_values_become_pairs_in_the_order_given() -> None:
+    assert validate.metadata_values({"b": "x", "a": None}) == (("b", "x"), ("a", None))
+
+
+def test_metadata_values_accept_each_kind_of_json_scalar() -> None:
+    # Arrange
+    given = {"text": "food", "integer": 1, "float": 2.5, "true": True, "false": False, "null": None}
+
+    # Act
+    result = validate.metadata_values(given)
+
+    # Assert
+    assert result == tuple(given.items())
+    assert [type(value) for _, value in result] == [str, int, float, bool, bool, type(None)]
+
+
+def test_metadata_values_are_plain_types() -> None:
+    # Act
+    result = validate.metadata_values(MappingProxyType({Color.RED: Color.RED, "n": Level.HIGH}))
+
+    # Assert
+    assert result == (("red", "red"), ("n", 5))
+    assert [(type(key), type(value)) for key, value in result] == [(str, str), (str, int)]
+
+
+def test_metadata_values_take_up_to_100_fields() -> None:
+    # Arrange
+    hundred = {f"k{number}": number for number in range(100)}
+
+    # Act / Assert
+    assert len(validate.metadata_values(hundred)) == 100
+    with pytest.raises(ValidationError, match="^metadata must not hold more than 100 "):
+        validate.metadata_values({**hundred, "one-more": 1})
+
+
+@pytest.mark.parametrize("value", [MAX_INTEGER, MIN_INTEGER])
+def test_metadata_values_accept_integers_that_fit_in_64_bits(value: int) -> None:
+    assert validate.metadata_values({"n": value}) == (("n", value),)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param([("a", 1)], id="pairs-not-a-mapping"),
+        pytest.param(None, id="none"),
+        pytest.param({1: "a"}, id="number-key"),
+        pytest.param({LONE_SURROGATE: "a"}, id="lone-surrogate-key"),
+        pytest.param({"a": LONE_SURROGATE}, id="lone-surrogate-value"),
+        pytest.param({"a": [1]}, id="list"),
+        pytest.param({"a": {"b": 1}}, id="dict"),
+        pytest.param({"a": (1,)}, id="tuple"),
+        pytest.param({"a": math.nan}, id="nan"),
+        pytest.param({"a": -math.inf}, id="infinity"),
+        pytest.param({"a": MAX_INTEGER + 1}, id="past-64-bits"),
+        pytest.param({"a": MIN_INTEGER - 1}, id="below-64-bits"),
+        pytest.param({"a": Huge.PAST_64_BITS}, id="int-enum-past-64-bits"),
+        pytest.param({"a": Fraction(1, 2)}, id="fraction"),
+    ],
+)
+def test_metadata_values_reject_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="metadata"):
+        validate.metadata_values(value)
+
+
+# moments -------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        datetime(2026, 11, 14, 12, 30, 0, 123456, tzinfo=UTC),
+        datetime(2026, 11, 14, 17, 30, 0, 123456, tzinfo=timezone(timedelta(hours=5))),
+        datetime(2026, 11, 14, 7, 30, 0, 123456, tzinfo=timezone(timedelta(hours=-5))),
+    ],
+)
+def test_moment_returns_the_same_moment_in_utc(value: datetime) -> None:
+    # Act
+    result = validate.moment("created_since", value)
+
+    # Assert
+    assert result == datetime(2026, 11, 14, 12, 30, 0, 123456, tzinfo=UTC)
+    assert result.utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(datetime(2026, 11, 14), id="no-zone"),
+        pytest.param(date(2026, 11, 14), id="date"),
+        pytest.param("2026-11-14T00:00:00+00:00", id="text"),
+        pytest.param(None, id="none"),
+        pytest.param(datetime.min.replace(tzinfo=timezone(timedelta(hours=5))), id="before-year-1"),
+        pytest.param(
+            datetime.max.replace(tzinfo=timezone(timedelta(hours=-5))), id="after-year-9999"
+        ),
+    ],
+)
+def test_moment_rejects_anything_else_and_names_the_field(value: object) -> None:
+    with pytest.raises(ValidationError, match="created_before"):
+        validate.moment("created_before", value)
+
+
+def test_importance_names_the_field_it_checks() -> None:
+    with pytest.raises(ValidationError, match="^min_importance "):
+        validate.importance(2, name="min_importance")
 
 
 # limit and offset ----------------------------------------------------------------------------
