@@ -12,10 +12,10 @@ WAIT_SECONDS = 10  # seconds: generous for a slow machine, far below a wait that
 THREADS = 8
 
 
-def run_sql(path: Path, sql: str) -> list[tuple[object, ...]]:
+def run_sql(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[tuple[object, ...]]:
     """Run one statement on the file through a connection of its own."""
     with closing(sqlite3.connect(path, autocommit=True)) as connection:
-        return connection.execute(sql).fetchall()
+        return connection.execute(sql, parameters).fetchall()
 
 
 @contextmanager

@@ -14,6 +14,7 @@ from pybodn._filter import Filter
 from pybodn._models import JSONScalar, MemoryRecord
 from pybodn._storage import schema
 from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
+from pybodn._words import WORD_RULES, words
 from pybodn.errors import StorageError
 
 # The columns of a record; seq, the order of insertion, SQLite fills in itself. Every query
@@ -70,6 +71,25 @@ _MIN_IMPORTANCE = " AND importance >= ?"
 _CREATED_SINCE = " AND created_at >= ?"
 _CREATED_BEFORE = " AND created_at < ?"
 
+# The word index holds each record's words under its seq. pybodn_words is a Python function
+# this connection lends SQLite for these statements; nothing stored in the file calls it.
+# OR REPLACE: a seq may still hold the words of a record that pybodn 0.1.0 deleted, and SQLite
+# gives the seq of a deleted last record to the next one.
+_INDEX_WORDS = (
+    "INSERT OR REPLACE INTO memory_words (rowid, words)"
+    " SELECT seq, pybodn_words(content) FROM memories"
+)
+_ADD_WORDS = f"{_INDEX_WORDS} WHERE id = ?"
+_DROP_WORDS = (
+    "DELETE FROM memory_words"
+    " WHERE rowid = (SELECT seq FROM memories WHERE namespace = ? AND id = ?)"
+)
+_SET_WORD_RULES = "INSERT OR REPLACE INTO settings (name, value) VALUES ('word_rules', ?)"
+_VERSIONS = (
+    "SELECT user_version, (SELECT value FROM settings WHERE name = 'word_rules')"
+    " FROM pragma_user_version"
+)
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -78,7 +98,7 @@ class SQLiteStore:
     turn, up to ``timeout`` seconds. Reads see every committed change at once.
     """
 
-    __slots__ = ("_closed", "_connection", "_lock")
+    __slots__ = ("_closed", "_connection", "_lock", "_versions")
 
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
@@ -95,8 +115,14 @@ class SQLiteStore:
         self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
+                self._connection.create_function(
+                    "pybodn_words", 1, _indexed_words, deterministic=True
+                )
+                _require_features(self._connection)
                 with _transaction(self._connection):  # two processes never migrate at once
                     _migrate(self._connection)
+                    _index_words(self._connection)
+                    self._versions = _file_versions(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
                 # Each commit is flushed to disk before the call returns.
                 self._connection.execute("PRAGMA synchronous = FULL").fetchall()
@@ -120,26 +146,31 @@ class SQLiteStore:
             ensure_open(self)
             if not rows:
                 return
-            with _storage_errors(), _transaction(self._connection):
+            with self._change():
                 reject_stored_keys(records, self._is_key_stored)
                 self._connection.executemany(_INSERT, rows)
+                self._connection.executemany(_ADD_WORDS, [(record.id,) for record in records])
 
     def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
         with self._lock:
             ensure_open(self)
-            with _storage_errors(), _transaction(self._connection):
+            with self._change():
                 current = self._find(namespace, by, value)
                 record = build(current)
                 if current is None:
                     self._connection.execute(_INSERT, _row(record))
+                    self._connection.execute(_ADD_WORDS, (record.id,))
                 else:
                     self._connection.execute(_REPLACE, {**_row(record), "current_id": current.id})
+                    if record.content != current.content:  # replaces the old text's words
+                        self._connection.execute(_ADD_WORDS, (record.id,))
         return record
 
     def delete(self, namespace: str, id: str) -> bool:
         with self._lock:
             ensure_open(self)
-            with _storage_errors(), _transaction(self._connection):
+            with self._change():
+                self._connection.execute(_DROP_WORDS, (namespace, id))  # while the row is there
                 deleted = self._connection.execute(_DELETE, (namespace, id)).rowcount
         return deleted > 0
 
@@ -168,6 +199,21 @@ class SQLiteStore:
             self._closed = True
             with _storage_errors():
                 self._connection.close()  # closing again does nothing
+
+    @contextmanager
+    def _change(self) -> Iterator[None]:
+        """A transaction for a change to a file still at the versions this process opened.
+
+        A newer pybodn may have upgraded the file since. This process would then write the old
+        way, leaving the file partly up to date, so it stops instead.
+        """
+        with _storage_errors(), _transaction(self._connection):
+            if _file_versions(self._connection) != self._versions:
+                raise StorageError(
+                    "a newer pybodn has upgraded the file since this process opened it:"
+                    " restart the process to write to it"
+                )
+            yield
 
     def _find(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         rows = self._connection.execute(_SELECT_BY[by], (namespace, value)).fetchall()
@@ -219,6 +265,49 @@ def _migrate(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA user_version = {number}")
     if is_new:
         connection.execute(f"PRAGMA application_id = {schema.APPLICATION_ID}")
+
+
+def _require_features(connection: sqlite3.Connection) -> None:
+    """Refuse an SQLite that lacks what the file needs, before the file is touched."""
+    try:
+        connection.execute("SELECT json_valid('[]')").fetchall()
+        connection.execute(f"CREATE VIRTUAL TABLE temp.trial USING {schema.WORD_INDEX}")
+        connection.execute("DROP TABLE temp.trial")
+    except sqlite3.OperationalError as error:
+        raise StorageError(
+            "pybodn needs SQLite with full-text search (FTS5) and JSON; this Python's SQLite"
+            f" {sqlite3.sqlite_version} lacks one: {error}"
+        ) from error
+
+
+def _index_words(connection: sqlite3.Connection) -> None:
+    """Index every record's words again when the file's index was built under other rules.
+
+    A file from 0.1.0 has no index yet, and one built under older rules is out of date: both
+    are filled under the current rules. Newer rules than this pybodn knows are refused.
+    """
+    _, rules = _file_versions(connection)
+    if rules == WORD_RULES:
+        return
+    if isinstance(rules, int) and rules > WORD_RULES:
+        raise StorageError(
+            f"the file's word index follows rules {rules}, newer than the {WORD_RULES} this"
+            " pybodn knows: upgrade pybodn to open it"
+        )
+    connection.execute("DELETE FROM memory_words")
+    connection.execute(_INDEX_WORDS)
+    connection.execute(_SET_WORD_RULES, (WORD_RULES,))
+
+
+def _file_versions(connection: sqlite3.Connection) -> tuple[object, object]:
+    """The file's schema version and the rules its word index was built with."""
+    ((schema_version, rules),) = connection.execute(_VERSIONS).fetchall()
+    return schema_version, rules
+
+
+def _indexed_words(content: object) -> str:
+    """A record's words as the index takes them: one space between each two."""
+    return " ".join(words(content)) if isinstance(content, str) else ""  # damaged: no words
 
 
 def _use_write_ahead_log(connection: sqlite3.Connection, timeout: float) -> None:

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Filters for `list` and `count`, passed by name: `tags` (has every tag), `metadata` (each top-level field is there and equals its value, as JSON compares them: `True` is not `1`, and `None` is a field set to `None`), `min_importance`, and `created_since` and `created_before` (moments with a time zone). A record is kept only if it passes every filter given, a filter set to `None` sets no condition, and `limit` and `offset` page through the records kept.
 
+### Changed
+
+- The SQLite file moves to schema version 2. It keeps an index of the words of every record, for search, and an index on creation time, so `created_since` and `created_before` no longer read the whole namespace. The first open of a file from 0.1.0 indexes every record while it holds the file's write lock, a second or so per 100,000 records, and other processes wait for it within their `timeout`.
+- Opening a file needs SQLite with full-text search (FTS5) and JSON, as Python's own builds and the common Linux distributions have; the oldest tested is SQLite 3.34. Without them, `StorageError` says what is missing and the file stays as it was.
+- A process that opened a file before a newer pybodn upgraded it raises `StorageError` on its next write, asking to be restarted, instead of writing the old way. Processes still running 0.1.0 have no such check: stop them before upgrading, or the records they add afterwards will be missing from search.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added
