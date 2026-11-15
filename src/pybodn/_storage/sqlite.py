@@ -5,7 +5,7 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -14,7 +14,19 @@ from pybodn._filter import Filter
 from pybodn._models import JSONScalar, MemoryRecord, SearchHit
 from pybodn._search import SCORE_DECIMALS, Term
 from pybodn._storage import schema
-from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
+from pybodn._storage.base import (
+    NO_VECTORS,
+    Build,
+    Lookup,
+    MissingVector,
+    Unchanged,
+    Vector,
+    check_size,
+    check_sizes,
+    ensure_open,
+    reject_stored_keys,
+    vector_after,
+)
 from pybodn._words import WORD_RULES, words
 from pybodn.errors import StorageError
 
@@ -106,6 +118,41 @@ _SEARCH = (
 )
 _BEST = " ORDER BY score DESC, seq LIMIT ?"
 
+# Vectors, under the seq of their record. OR REPLACE: a seq may still hold the vector of a record
+# that pybodn 0.1.0 deleted, as with words. A vector is given only if its record still holds the
+# text it was made from.
+_SET_VECTOR = (
+    "INSERT OR REPLACE INTO memory_vectors (seq, record_id, model, vector)"
+    " SELECT seq, id, ?, ? FROM memories WHERE id = ?"
+)
+_GIVE_VECTOR = f"{_SET_VECTOR} AND content = ?"
+_DROP_VECTOR = (
+    "DELETE FROM memory_vectors"
+    " WHERE seq = (SELECT seq FROM memories WHERE namespace = ? AND id = ?)"
+)
+_VECTOR_SIZE = "SELECT length(vector) FROM memory_vectors WHERE model = ? LIMIT 1"
+_LAST_SEQ = "SELECT coalesce(max(seq), 0) FROM memories"
+_MISSING_VECTORS = (
+    "SELECT seq, namespace, id, content FROM memories WHERE seq > ? AND seq <= ?"
+    " AND NOT EXISTS (SELECT 1 FROM memory_vectors WHERE memory_vectors.seq = memories.seq"
+    " AND memory_vectors.record_id = memories.id AND model = ?)"
+    " ORDER BY seq LIMIT ?"
+)
+
+# The vectors of one model in one namespace, by seq. The namespace's records lead the join, in
+# the order added, and each one's vector is then read by its seq; a vector another record left
+# at that seq is passed over. The records a search finds are read afterwards, by seq.
+_SEARCH_VECTORS = (
+    "SELECT memories.seq, vector FROM memories CROSS JOIN memory_vectors"
+    " ON memory_vectors.seq = memories.seq AND memory_vectors.record_id = memories.id"
+    " WHERE namespace = ? AND model = ?"
+)
+_IN_ORDER = " ORDER BY memories.seq"
+_RECORDS_AT = (
+    f"SELECT seq, {', '.join(_COLUMNS)} FROM memories"  # noqa: S608
+    " WHERE seq IN (SELECT value FROM json_each(?))"
+)
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -160,23 +207,31 @@ class SQLiteStore:
             with _storage_errors():
                 return self._find(namespace, by, value)
 
-    def insert(self, records: Sequence[MemoryRecord]) -> None:
+    def insert(
+        self, records: Sequence[MemoryRecord], *, vectors: Mapping[str, Vector] = NO_VECTORS
+    ) -> None:
         rows = [_row(record) for record in records]
+        given = [(vector.model, vector.data, record_id) for record_id, vector in vectors.items()]
         with self._lock:
             ensure_open(self)
             if not rows:
                 return
             with self._up_to_date(_BEGIN_WRITE):
                 reject_stored_keys(records, self._is_key_stored)
+                check_sizes(vectors.values(), self._vector_size)
                 self._connection.executemany(_INSERT, rows)
                 self._connection.executemany(_ADD_WORDS, [(record.id,) for record in records])
+                self._connection.executemany(_SET_VECTOR, given)
 
-    def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
+    def modify(
+        self, namespace: str, by: Lookup, value: str, build: Build, *, vector: Vector | None = None
+    ) -> MemoryRecord:
         with self._lock:
             ensure_open(self)
             with self._up_to_date(_BEGIN_WRITE):
                 current = self._find(namespace, by, value)
                 record = build(current)
+                after = vector_after(current, record, vector, self._vector_size)
                 if current is None:
                     self._connection.execute(_INSERT, _row(record))
                     self._connection.execute(_ADD_WORDS, (record.id,))
@@ -184,13 +239,16 @@ class SQLiteStore:
                     self._connection.execute(_REPLACE, {**_row(record), "current_id": current.id})
                     if record.content != current.content:  # replaces the old text's words
                         self._connection.execute(_ADD_WORDS, (record.id,))
+                self._give_vector(record, after)
         return record
 
     def delete(self, namespace: str, id: str) -> bool:
         with self._lock:
             ensure_open(self)
             with self._up_to_date(_BEGIN_WRITE):
-                self._connection.execute(_DROP_WORDS, (namespace, id))  # while the row is there
+                # while the row is there
+                self._connection.execute(_DROP_WORDS, (namespace, id))
+                self._connection.execute(_DROP_VECTOR, (namespace, id))
                 deleted = self._connection.execute(_DELETE, (namespace, id)).rowcount
         return deleted > 0
 
@@ -227,6 +285,52 @@ class SQLiteStore:
                 rows = self._connection.execute(sql, parameters).fetchall()
             return [SearchHit(record=_record(row), score=row["score"]) for row in rows]
 
+    def search_vectors(
+        self, namespace: str, query: Vector, *, where: Filter, limit: int
+    ) -> builtins.list[SearchHit]:
+        conditions, values = _conditions(where)
+        sql = f"{_SEARCH_VECTORS}{conditions}{_IN_ORDER}"  # noqa: S608 - fixed pieces only
+        with self._lock:
+            ensure_open(self)
+            from pybodn import _vectors  # noqa: PLC0415 - NumPy, only once there is a model
+
+            # The vectors must be stored as this process reads them.
+            with self._up_to_date(_BEGIN_READ):
+                check_size(query, self._vector_size(query.model))
+                rows = self._connection.execute(sql, (namespace, query.model, *values))
+                found = _vectors.best(query, ((seq, vector) for seq, vector in rows), limit=limit)
+                records = self._records_at([seq for _, seq in found])
+            return [SearchHit(record=records[seq], score=score) for score, seq in found]
+
+    def last_seq(self) -> int:
+        with self._lock:
+            ensure_open(self)
+            with _storage_errors():
+                last: int = _single(self._connection, _LAST_SEQ)
+        return last
+
+    def missing_vectors(
+        self, model: str, *, after: int, until: int, limit: int
+    ) -> builtins.list[MissingVector]:
+        with self._lock:
+            ensure_open(self)
+            with self._up_to_date(_BEGIN_READ):
+                rows = self._connection.execute(
+                    _MISSING_VECTORS, (after, until, model, limit)
+                ).fetchall()
+        return [_missing(row) for row in rows]
+
+    def write_vectors(self, vectors: Sequence[tuple[MissingVector, Vector]]) -> int:
+        given = [
+            (vector.model, vector.data, missing.id, vector.text) for missing, vector in vectors
+        ]
+        with self._lock:
+            ensure_open(self)
+            with self._up_to_date(_BEGIN_WRITE):
+                check_sizes((vector for _, vector in vectors), self._vector_size)
+                written: int = self._connection.executemany(_GIVE_VECTOR, given).rowcount
+        return written
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -255,6 +359,23 @@ class SQLiteStore:
 
     def _is_key_stored(self, namespace: str, key: str) -> bool:
         return bool(self._connection.execute(_KEY_USED, (namespace, key)).fetchall())
+
+    def _vector_size(self, model: str) -> int | None:
+        """How many bytes long the stored vectors of ``model`` are; ``None`` if there are none."""
+        rows = self._connection.execute(_VECTOR_SIZE, (model,)).fetchall()
+        return rows[0][0] if rows else None
+
+    def _give_vector(self, record: MemoryRecord, vector: Vector | Unchanged | None) -> None:
+        """Give the record just written ``vector``: a new one, the one it has, or none."""
+        if isinstance(vector, Vector):
+            self._connection.execute(_SET_VECTOR, (vector.model, vector.data, record.id))
+        elif vector is None:
+            self._connection.execute(_DROP_VECTOR, (record.namespace, record.id))
+
+    def _records_at(self, seqs: Sequence[int]) -> dict[int, MemoryRecord]:
+        """The records at these places in the order added, by place."""
+        rows = self._connection.execute(_RECORDS_AT, (json.dumps(seqs),)).fetchall()
+        return {row["seq"]: _record(row) for row in rows}
 
 
 @contextmanager
@@ -459,6 +580,17 @@ def _record(row: sqlite3.Row) -> MemoryRecord:
         )
     except (TypeError, ValueError, RecursionError) as error:
         raise StorageError(f"record {row['id']!r} in the database is damaged: {error}") from error
+
+
+def _missing(row: sqlite3.Row) -> MissingVector:
+    """A row of ``_MISSING_VECTORS``. A text that is no longer text raises ``StorageError``."""
+    if not isinstance(row["content"], str):
+        raise StorageError(
+            f"record {row['id']!r} in the database is damaged: its content is not text"
+        )
+    return MissingVector(
+        seq=row["seq"], namespace=row["namespace"], id=row["id"], text=row["content"]
+    )
 
 
 def _json(value: object) -> str:

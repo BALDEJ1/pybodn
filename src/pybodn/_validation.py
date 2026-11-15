@@ -12,7 +12,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import NamedTuple, get_args
 
-from pybodn._models import JSONScalar, JSONValue, NewMemory, SearchMode
+from pybodn._models import Embedder, JSONScalar, JSONValue, NewMemory, SearchMode
 from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
@@ -196,6 +196,20 @@ def path(value: object) -> str:
     if "\x00" in result:
         raise ValidationError("path must not contain a NUL character")
     return result
+
+
+def embedder(value: object) -> Embedder | None:
+    """No model, or an ``Embedder`` with a non-empty name, a callable ``embed`` and a
+    ``batch_size`` from 1."""
+    if value is None:
+        return None
+    if not isinstance(value, Embedder):
+        raise ValidationError(f"embedder must be an Embedder, not {type(value).__name__}")
+    name = text("embedder name", value.name)
+    if not callable(value.embed):
+        raise ValidationError("embedder embed must be callable")
+    size = _integer("batch_size", value.batch_size, minimum=1)
+    return Embedder(name, value.embed, batch_size=size)
 
 
 def timeout(value: object) -> float:

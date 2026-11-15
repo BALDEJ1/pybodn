@@ -4,10 +4,11 @@ from collections.abc import Callable
 import pytest
 
 import pybodn
-from pybodn import Collection, MemoryEngine
+from pybodn import Collection, Embedder, MemoryEngine
 
 PUBLIC_NAMES = [
     "Collection",
+    "Embedder",
     "JSONValue",
     "MemoryEngine",
     "MemoryRecord",
@@ -31,6 +32,7 @@ def test_every_documented_name_can_be_imported(name: str) -> None:
     ("method", "positional"),
     [
         (MemoryEngine.collection, ["namespace"]),
+        (MemoryEngine.embed_missing, []),
         (Collection.add, ["content"]),
         (Collection.add_many, ["memories"]),
         (Collection.put, ["key", "content"]),
@@ -77,3 +79,16 @@ def test_engine_factories_take_only_required_parameters_by_position(
 
     # Assert
     assert by_position == positional
+
+
+def test_an_embedder_takes_only_its_name_and_function_by_position() -> None:
+    # Arrange
+    parameters = inspect.signature(Embedder).parameters.values()
+
+    # Act
+    by_position = [
+        parameter.name for parameter in parameters if parameter.kind != parameter.KEYWORD_ONLY
+    ]
+
+    # Assert
+    assert by_position == ["name", "embed"]

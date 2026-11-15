@@ -41,5 +41,17 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         # Facts about the file itself: for now, the rules its word index was built with.
         "CREATE TABLE settings (name TEXT PRIMARY KEY, value NOT NULL)",
         "CREATE INDEX ix_memories_namespace_created ON memories (namespace, created_at)",
+        # The vector of each record that has one, under the record's seq: the model that made it,
+        # and its numbers at unit length, as pybodn._storage.base describes them. record_id keeps
+        # a vector from the next record of its seq: SQLite gives the seq of a deleted last record
+        # to the next one, and pybodn 0.1.0 deletes records without their vectors.
+        """CREATE TABLE memory_vectors (
+    seq       INTEGER PRIMARY KEY,
+    record_id TEXT NOT NULL,
+    model     TEXT NOT NULL,
+    vector    BLOB NOT NULL
+)""",
+        # Finds how long a model's stored vectors are.
+        "CREATE INDEX ix_memory_vectors_model ON memory_vectors (model)",
     ),
 )

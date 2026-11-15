@@ -128,12 +128,13 @@ def test_words_that_pybodn_0_1_0_left_behind_do_not_block_the_next_record(path: 
 
 
 def make_0_1_0_file(path: Path) -> None:
-    """A file as pybodn 0.1.0 leaves it: records, and nothing of the word index."""
+    """A file as pybodn 0.1.0 leaves it: records, and nothing that schema version 2 adds."""
     with MemoryEngine.sqlite(path) as engine:
         prepare(engine)
     for sql in (
         "DROP TABLE memory_words",
         "DROP TABLE settings",
+        "DROP TABLE memory_vectors",
         "DROP INDEX ix_memories_namespace_created",
         "PRAGMA user_version = 1",
     ):
