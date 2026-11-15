@@ -48,7 +48,12 @@ jobs:
     # Python 3.12 as Red Hat Enterprise Linux 9 ships it, with SQLite 3.34: the oldest SQLite
     # pybodn is tested on. The other jobs use uv's Python, which brings a recent SQLite along.
     runs-on: ubuntu-latest
-    container: rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+    container:
+      image: rockylinux/rockylinux:9@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f
+      # The image sets no PATH. Without one, the steps after setup-uv get a PATH that holds only
+      # uv's folder, and not even sh is found.
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - run: dnf install -y python3.12
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
