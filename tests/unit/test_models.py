@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from pybodn._models import MemoryRecord, NewMemory
+from pybodn._models import MemoryRecord, NewMemory, SearchHit
 
 NOW = datetime(2026, 11, 13, 9, 55, tzinfo=UTC)
 
@@ -53,3 +53,18 @@ def test_models_are_frozen(model: NewMemory | MemoryRecord) -> None:
 @pytest.mark.parametrize("model", [NewMemory("Prefers Python"), RECORD])
 def test_models_use_slots(model: NewMemory | MemoryRecord) -> None:
     assert not hasattr(model, "__dict__")
+
+
+def test_a_search_hit_takes_only_keyword_arguments() -> None:
+    with pytest.raises(TypeError):
+        SearchHit(RECORD, 1.5)  # type: ignore[call-arg]
+
+
+def test_a_search_hit_is_frozen_and_uses_slots() -> None:
+    # Arrange
+    hit = SearchHit(record=RECORD, score=1.5)
+
+    # Act / Assert
+    with pytest.raises(FrozenInstanceError):
+        hit.score = 2.0  # type: ignore[misc]
+    assert not hasattr(hit, "__dict__")

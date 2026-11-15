@@ -212,6 +212,7 @@ def test_reads_do_not_wait_for_another_connection_that_writes(path: Path) -> Non
             assert notes.get_by_key("language") == record
             assert notes.list() == [record]
             assert notes.count() == 1
+            assert [hit.record for hit in notes.search("python")] == [record]
 
 
 def test_adding_nothing_does_not_wait_for_another_connection(path: Path) -> None:
@@ -228,9 +229,10 @@ DAMAGE = {
     "time": "UPDATE memories SET created_at = 'yesterday'",
 }
 
-# One read of a single record, and one inside a change, which must be undone.
+# One read of a single record, one inside a change, which must be undone, and a search.
 READS: dict[str, Callable[[Collection, str], object]] = {
     "get": lambda notes, record_id: notes.get(record_id),
+    "search": lambda notes, record_id: notes.search("Python"),
     "update": lambda notes, record_id: notes.update(record_id, content="Prefers Rust"),
 }
 

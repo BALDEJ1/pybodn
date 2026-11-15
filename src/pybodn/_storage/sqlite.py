@@ -11,7 +11,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pybodn._filter import Filter
-from pybodn._models import JSONScalar, MemoryRecord
+from pybodn._models import JSONScalar, MemoryRecord, SearchHit
+from pybodn._search import SCORE_DECIMALS, Term
 from pybodn._storage import schema
 from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
 from pybodn._words import WORD_RULES, words
@@ -52,6 +53,8 @@ _KEY_USED = "SELECT 1 FROM memories WHERE namespace = ? AND memory_key = ?"
 _DELETE = "DELETE FROM memories WHERE namespace = ? AND id = ?"
 _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
 _PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
+_BEGIN_WRITE = "BEGIN IMMEDIATE"  # takes the write lock at once, waiting up to the timeout
+_BEGIN_READ = "BEGIN"  # every read until the end sees the file as it was at the first
 
 # What each filter adds to a query's WHERE, with its values passed apart. A metadata field
 # is found by its name, never by a path, and its JSON type keeps True apart from 1.
@@ -71,13 +74,13 @@ _MIN_IMPORTANCE = " AND importance >= ?"
 _CREATED_SINCE = " AND created_at >= ?"
 _CREATED_BEFORE = " AND created_at < ?"
 
-# The word index holds each record's words under its seq. pybodn_words is a Python function
-# this connection lends SQLite for these statements; nothing stored in the file calls it.
-# OR REPLACE: a seq may still hold the words of a record that pybodn 0.1.0 deleted, and SQLite
-# gives the seq of a deleted last record to the next one.
+# The word index holds each record's words and its namespace's token under its seq. The
+# pybodn_ functions are Python functions this connection lends SQLite for these statements;
+# nothing stored in the file calls them. OR REPLACE: a seq may still hold the words of a record
+# that pybodn 0.1.0 deleted, and SQLite gives the seq of a deleted last record to the next one.
 _INDEX_WORDS = (
-    "INSERT OR REPLACE INTO memory_words (rowid, words)"
-    " SELECT seq, pybodn_words(content) FROM memories"
+    "INSERT OR REPLACE INTO memory_words (rowid, words, namespace_token)"
+    " SELECT seq, pybodn_words(content), pybodn_namespace_token(namespace) FROM memories"
 )
 _ADD_WORDS = f"{_INDEX_WORDS} WHERE id = ?"
 _DROP_WORDS = (
@@ -89,6 +92,19 @@ _VERSIONS = (
     "SELECT user_version, (SELECT value FROM settings WHERE name = 'word_rules')"
     " FROM pragma_user_version"
 )
+
+# The records a search finds, with their scores. The word index leads the join, so that FTS5
+# finds the matches among its namespace's rows and weighs the terms once, and each record found
+# is then read by its seq. The namespace's token weighs nothing in the score, and the score is
+# rounded as the shared formula rounds it. The namespace is compared again, because one longer
+# than 16 KB may share its token with another.
+_SEARCH = (
+    f"SELECT {', '.join(_COLUMNS)},"  # noqa: S608
+    f" round(-bm25(memory_words, 1.0, 0.0), {SCORE_DECIMALS}) AS score"
+    " FROM memory_words CROSS JOIN memories ON memories.seq = memory_words.rowid"
+    " WHERE memory_words MATCH ? AND namespace = ?"
+)
+_BEST = " ORDER BY score DESC, seq LIMIT ?"
 
 
 class SQLiteStore:
@@ -118,8 +134,12 @@ class SQLiteStore:
                 self._connection.create_function(
                     "pybodn_words", 1, _indexed_words, deterministic=True
                 )
+                self._connection.create_function(
+                    "pybodn_namespace_token", 1, _namespace_token, deterministic=True
+                )
                 _require_features(self._connection)
-                with _transaction(self._connection):  # two processes never migrate at once
+                # two processes never migrate at once
+                with _transaction(self._connection, _BEGIN_WRITE):
                     _migrate(self._connection)
                     _index_words(self._connection)
                     self._versions = _file_versions(self._connection)
@@ -146,7 +166,7 @@ class SQLiteStore:
             ensure_open(self)
             if not rows:
                 return
-            with self._change():
+            with self._up_to_date(_BEGIN_WRITE):
                 reject_stored_keys(records, self._is_key_stored)
                 self._connection.executemany(_INSERT, rows)
                 self._connection.executemany(_ADD_WORDS, [(record.id,) for record in records])
@@ -154,7 +174,7 @@ class SQLiteStore:
     def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
         with self._lock:
             ensure_open(self)
-            with self._change():
+            with self._up_to_date(_BEGIN_WRITE):
                 current = self._find(namespace, by, value)
                 record = build(current)
                 if current is None:
@@ -169,7 +189,7 @@ class SQLiteStore:
     def delete(self, namespace: str, id: str) -> bool:
         with self._lock:
             ensure_open(self)
-            with self._change():
+            with self._up_to_date(_BEGIN_WRITE):
                 self._connection.execute(_DROP_WORDS, (namespace, id))  # while the row is there
                 deleted = self._connection.execute(_DELETE, (namespace, id)).rowcount
         return deleted > 0
@@ -194,6 +214,19 @@ class SQLiteStore:
                 count: int = _single(self._connection, _COUNT + conditions, (namespace, *values))
         return count
 
+    def search_words(
+        self, namespace: str, terms: Sequence[Term], *, where: Filter, limit: int
+    ) -> builtins.list[SearchHit]:
+        conditions, values = _conditions(where)
+        sql = f"{_SEARCH}{conditions}{_BEST}"  # noqa: S608 - fixed pieces only
+        parameters = (_match(namespace, terms), namespace, *values, limit)
+        with self._lock:
+            ensure_open(self)
+            # The index must follow the rules this process prepared the query by.
+            with self._up_to_date(_BEGIN_READ):
+                rows = self._connection.execute(sql, parameters).fetchall()
+            return [SearchHit(record=_record(row), score=row["score"]) for row in rows]
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -201,17 +234,18 @@ class SQLiteStore:
                 self._connection.close()  # closing again does nothing
 
     @contextmanager
-    def _change(self) -> Iterator[None]:
-        """A transaction for a change to a file still at the versions this process opened.
+    def _up_to_date(self, begin: str) -> Iterator[None]:
+        """A transaction on a file still at the versions this process opened.
 
         A newer pybodn may have upgraded the file since. This process would then write the old
-        way, leaving the file partly up to date, so it stops instead.
+        way, leaving the file partly up to date, or search an index built under other rules, so
+        it stops instead.
         """
-        with _storage_errors(), _transaction(self._connection):
+        with _storage_errors(), _transaction(self._connection, begin):
             if _file_versions(self._connection) != self._versions:
                 raise StorageError(
                     "a newer pybodn has upgraded the file since this process opened it:"
-                    " restart the process to write to it"
+                    " restart the process to write to it or search it"
                 )
             yield
 
@@ -233,9 +267,9 @@ def _storage_errors() -> Iterator[None]:
 
 
 @contextmanager
-def _transaction(connection: sqlite3.Connection) -> Iterator[None]:
-    """Take the write lock, waiting up to the timeout; commit, or roll back on any error."""
-    connection.execute("BEGIN IMMEDIATE")
+def _transaction(connection: sqlite3.Connection, begin: str) -> Iterator[None]:
+    """Begin with ``begin``; commit at the end, or roll back on any error."""
+    connection.execute(begin)
     try:
         yield
         connection.execute("COMMIT")
@@ -310,6 +344,17 @@ def _indexed_words(content: object) -> str:
     return " ".join(words(content)) if isinstance(content, str) else ""  # damaged: no words
 
 
+def _namespace_token(namespace: object) -> str:
+    """The token for ``namespace`` in the word index: its UTF-8 bytes as hex digits.
+
+    The tokenizer keeps hex digits together, so any namespace is one token. FTS5 cuts a token
+    longer than 32 KB short, so namespaces longer than 16 KB may share one. Files keep the
+    tokens they were indexed with: a change here must raise ``WORD_RULES``, so that they are
+    indexed again.
+    """
+    return namespace.encode().hex() if isinstance(namespace, str) else ""  # damaged: no token
+
+
 def _use_write_ahead_log(connection: sqlite3.Connection, timeout: float) -> None:
     """Switch the file to the write-ahead log, so that readers never block the writer.
 
@@ -332,6 +377,17 @@ def _single(connection: sqlite3.Connection, sql: str, parameters: tuple[object, 
     """The one value the query returns."""
     ((value,),) = connection.execute(sql, parameters).fetchall()
     return value
+
+
+def _match(namespace: str, terms: Sequence[Term]) -> str:
+    """An FTS5 query for the rows of ``namespace`` that any one of ``terms`` finds.
+
+    Each term is a quoted string, ``"..."*`` for a prefix, so no word can be read as FTS5 syntax.
+    """
+    any_term = " OR ".join(
+        '"' + term.text.replace('"', '""') + '"' + ("*" if term.is_prefix else "") for term in terms
+    )
+    return f'namespace_token : "{_namespace_token(namespace)}" AND words : ({any_term})'
 
 
 def _conditions(where: Filter) -> tuple[str, tuple[object, ...]]:

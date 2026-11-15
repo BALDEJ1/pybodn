@@ -6,6 +6,7 @@ from enum import IntEnum, StrEnum
 from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
+from unittest.mock import ANY
 
 import pytest
 
@@ -551,6 +552,67 @@ def test_offset_accepts_an_integer_from_zero(value: int) -> None:
 def test_offset_rejects_anything_else(value: object) -> None:
     with pytest.raises(ValidationError, match="offset"):
         validate.offset(value)
+
+
+# search ----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["", "?!", "кава з молоком", "nul\x00inside"])
+def test_query_accepts_any_string(value: str) -> None:
+    assert validate.query(value) == value
+
+
+def test_query_returns_a_plain_str_for_a_str_subclass() -> None:
+    # Act
+    result = validate.query(Color.RED)
+
+    # Assert
+    assert type(result) is str
+    assert result == "red"
+
+
+@pytest.mark.parametrize("value", [None, 1, b"bytes", ["a"], LONE_SURROGATE])
+def test_query_rejects_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="^query must"):
+        validate.query(value)
+
+
+@pytest.mark.parametrize("value", [1, MAX_INTEGER])
+def test_search_limit_accepts_an_integer_from_one(value: int) -> None:
+    assert validate.search_limit(value) == value
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, MAX_INTEGER + 1, True, 1.0, "1"])
+def test_search_limit_rejects_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="^limit must"):
+        validate.search_limit(value)
+
+
+@pytest.mark.parametrize("value", ["auto", "text", "vector"])
+def test_mode_accepts_each_mode(value: str) -> None:
+    assert validate.mode(value) == value
+
+
+def test_mode_returns_a_plain_str_for_a_str_subclass() -> None:
+    # Arrange
+    class Mode(StrEnum):
+        TEXT = "text"
+
+    # Act
+    result = validate.mode(Mode.TEXT)
+
+    # Assert
+    assert type(result) is str
+    assert result == "text"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "TEXT", "hybrid", None, 1, ["text"], pytest.param(ANY, id="equal-to-everything")],
+)
+def test_mode_rejects_anything_else(value: object) -> None:
+    with pytest.raises(ValidationError, match="^mode must be"):
+        validate.mode(value)
 
 
 # expected_version ----------------------------------------------------------------------------

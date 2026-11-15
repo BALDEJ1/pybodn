@@ -10,9 +10,9 @@ import numbers
 import os
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import NamedTuple, get_args
 
-from pybodn._models import JSONScalar, JSONValue, NewMemory
+from pybodn._models import JSONScalar, JSONValue, NewMemory, SearchMode
 from pybodn.errors import ValidationError
 
 _MAX_INTEGER = 2**63 - 1  # the largest integer SQLite can store
@@ -35,6 +35,8 @@ _MAX_TEXT_BYTES = 16 * 1024 * 1024
 # expression, and SQLite refuses an expression more than 1,000 levels deep. No real filter
 # comes near this many.
 _MAX_FILTER_ITEMS = 100
+
+_MODES: tuple[SearchMode, ...] = get_args(SearchMode.__value__)
 
 
 class _Size(NamedTuple):
@@ -150,6 +152,24 @@ def limit(value: object) -> int | None:
 def offset(value: object) -> int:
     """An integer from 0."""
     return _integer("offset", value, minimum=0)
+
+
+def query(value: object) -> str:
+    """Any string to search for."""
+    return _string("query", value)
+
+
+def search_limit(value: object) -> int:
+    """How many records a search returns at most: an integer from 1."""
+    return _integer("limit", value, minimum=1)
+
+
+def mode(value: object) -> SearchMode:
+    """How to search: ``"auto"``, ``"text"`` or ``"vector"``."""
+    for known in _MODES:
+        if isinstance(value, str) and value == known:
+            return known
+    raise ValidationError(f"mode must be 'auto', 'text' or 'vector', not {value!r:.40}")
 
 
 def expected_version(value: object) -> int | None:

@@ -10,12 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Filters for `list` and `count`, passed by name: `tags` (has every tag), `metadata` (each top-level field is there and equals its value, as JSON compares them: `True` is not `1`, and `None` is a field set to `None`), `min_importance`, and `created_since` and `created_before` (moments with a time zone). A record is kept only if it passes every filter given, a filter set to `None` sets no condition, and `limit` and `offset` page through the records kept.
+- `Collection.search(query, *, limit=10, mode="auto", **filters)` returns the records that hold any word of the query, best first, as `SearchHit` objects: the `record` and its `score`, where higher is better and scores compare only within one search. Case, stress marks and apostrophes do not matter, and a word also finds its forms with another ending in Ukrainian, Russian and English ("алергії" finds "алергія", "projects" finds "project"); a word of three letters or fewer, or a number, finds only itself. Records score by BM25 over the words of every record in the file, so a word common in other namespaces counts for less, but records of other namespaces are never returned. It takes the filters `list` takes. A query without words returns nothing, and one of more than 100 different words raises `ValidationError`. `mode="text"` and `"auto"` search by words; `mode="vector"` searches by meaning, which needs an embedding model, and raises `ConfigurationError`.
+- `SearchHit`, and `ConfigurationError` in `pybodn.errors`.
 
 ### Changed
 
 - The SQLite file moves to schema version 2. It keeps an index of the words of every record, for search, and an index on creation time, so `created_since` and `created_before` read only the records in their range. The first open of a file from 0.1.0 indexes every record while it holds the file's write lock, a second or so per 100,000 records, and other processes wait for it within their `timeout`.
 - Opening a file needs SQLite with full-text search (FTS5) and JSON, as Python's own builds and the common Linux distributions have; the oldest tested is SQLite 3.34. Without them, `StorageError` says what is missing and the file stays as it was.
-- A process that opened a file before a newer pybodn upgraded it raises `StorageError` on its next write, asking to be restarted, instead of writing the old way. Processes still running 0.1.0 have no such check: stop them before upgrading, or the records they add afterwards will be missing from search.
+- A process that opened a file before a newer pybodn upgraded it raises `StorageError` on its next write or search, asking to be restarted, instead of writing the old way or searching an index built under other rules. Processes still running 0.1.0 have no such check: stop them before upgrading, or the records they add afterwards will be missing from search.
 
 ## [0.1.0] - 2026-11-13
 
