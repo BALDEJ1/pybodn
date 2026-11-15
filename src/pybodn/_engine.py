@@ -2,13 +2,17 @@
 
 import os
 from datetime import UTC, datetime
+from functools import partial
+from types import ModuleType
 from typing import Self
 
 from pybodn import _validation as validate
-from pybodn._collection import Clock, Collection
+from pybodn._collection import Clock, Collection, Vectorize
+from pybodn._models import Embedder
 from pybodn._storage.base import Store, ensure_open
 from pybodn._storage.memory import InMemoryStore
 from pybodn._storage.sqlite import SQLiteStore
+from pybodn.errors import ConfigurationError
 
 
 def _utc_now() -> datetime:
@@ -23,34 +27,77 @@ class MemoryEngine:
     ``EngineClosedError``.
     """
 
-    __slots__ = ("_clock", "_store")
+    __slots__ = ("_clock", "_embedder", "_store", "_vectorize")
 
-    def __init__(self, store: Store, *, clock: Clock = _utc_now) -> None:
-        """Internal: use ``MemoryEngine.sqlite()`` or ``MemoryEngine.in_memory()``."""
+    def __init__(
+        self, store: Store, *, clock: Clock = _utc_now, embedder: Embedder | None = None
+    ) -> None:
+        """Internal: use ``MemoryEngine.sqlite()`` or ``MemoryEngine.in_memory()``, which check
+        ``embedder`` before they open the store."""
         self._store = store
         self._clock = clock
+        self._embedder = embedder
+        self._vectorize: Vectorize | None = (
+            None if embedder is None else partial(_vectors_module().embed, embedder)
+        )
 
     @classmethod
-    def sqlite(cls, path: str | os.PathLike[str], *, timeout: float = 5.0) -> Self:
+    def sqlite(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        timeout: float = 5.0,
+        embedder: Embedder | None = None,
+    ) -> Self:
         """An engine that keeps records in the SQLite file at ``path``, made if missing.
 
         While another process writes to the file, a write waits up to ``timeout`` seconds,
         then raises ``StorageError``. ``":memory:"`` keeps records in memory until the
-        engine is closed.
+        engine is closed. ``embedder`` is the embedding model that search by meaning uses.
         """
         checked_path = validate.path(path)
         checked_timeout = validate.timeout(timeout)
-        return cls(SQLiteStore(checked_path, timeout=checked_timeout))
+        checked_embedder = _checked(embedder)
+        return cls(SQLiteStore(checked_path, timeout=checked_timeout), embedder=checked_embedder)
 
     @classmethod
-    def in_memory(cls) -> Self:
-        """An engine that keeps records in this process's memory until it is closed."""
-        return cls(InMemoryStore())
+    def in_memory(cls, *, embedder: Embedder | None = None) -> Self:
+        """An engine that keeps records in this process's memory until it is closed.
+        ``embedder`` is the embedding model that search by meaning uses."""
+        checked_embedder = _checked(embedder)
+        return cls(InMemoryStore(), embedder=checked_embedder)
 
     def collection(self, namespace: str) -> Collection:
         """The records of ``namespace``. Namespaces never see each other's records."""
         ensure_open(self._store)
-        return Collection(self._store, validate.text("namespace", namespace), self._clock)
+        return Collection(
+            self._store, validate.text("namespace", namespace), self._clock, self._vectorize
+        )
+
+    def embed_missing(self) -> int:
+        """Give a vector of the engine's model to every record that has none, in every
+        namespace, and return how many got one.
+
+        Records get no vector when an engine without the model writes them, and the vectors
+        of another model are replaced: this is how to move to a new model. Records go to the
+        model ``batch_size`` at a time, in the order added, up to the last record there was
+        at the start, and each batch is written as soon as the model answers: if the model
+        fails, the batches before stay written. A record whose text changes meanwhile keeps
+        no vector of its old text, and waits for the next call.
+        """
+        ensure_open(self._store)
+        embedder, vectorize = self._embedder, self._vectorize
+        if embedder is None or vectorize is None:  # both or neither
+            raise ConfigurationError("embed_missing needs an embedding model; this engine has none")
+        until = self._store.last_seq()
+        after, written = 0, 0
+        while missing := self._store.missing_vectors(
+            embedder.name, after=after, until=until, limit=embedder.batch_size
+        ):
+            vectors = vectorize([record.text for record in missing])
+            written += self._store.write_vectors([*zip(missing, vectors, strict=True)])
+            after = missing[-1].seq
+        return written
 
     def close(self) -> None:
         """Close the storage. Safe to call again."""
@@ -62,3 +109,27 @@ class MemoryEngine:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+def _checked(embedder: object) -> Embedder | None:
+    """``embedder`` once checked, and NumPy with it, so that a bad one fails before a store
+    opens."""
+    checked = validate.embedder(embedder)
+    if checked is not None:
+        _vectors_module()
+    return checked
+
+
+def _vectors_module() -> ModuleType:
+    """The module of search by meaning. It needs NumPy, and so is imported only with a model.
+
+    A NumPy that is missing raises ``ConfigurationError`` with the command that installs it; one
+    that is there but fails to import raises its own error.
+    """
+    try:
+        from pybodn import _vectors  # noqa: PLC0415
+    except ModuleNotFoundError as error:
+        raise ConfigurationError(
+            'search by meaning needs NumPy: install it with pip install "pybodn[vector]"'
+        ) from error
+    return _vectors

@@ -4,6 +4,7 @@ __all__ = [
     "ConcurrentUpdateError",
     "ConfigurationError",
     "DuplicateKeyError",
+    "EmbeddingError",
     "EngineClosedError",
     "PyBodnError",
     "RecordNotFoundError",
@@ -42,3 +43,8 @@ class EngineClosedError(PyBodnError):
 
 class ConfigurationError(PyBodnError):
     """The engine is not set up for what was asked, such as a search by meaning without a model."""
+
+
+class EmbeddingError(PyBodnError):
+    """The embedding model gave something unusable: not one vector of numbers per text, a vector
+    that cannot be scaled to unit length, or one of another length than its stored vectors."""

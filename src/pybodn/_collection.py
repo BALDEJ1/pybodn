@@ -9,10 +9,11 @@ from typing import Any, TypedDict, Unpack
 from uuid import uuid4
 
 from pybodn import _validation as validate
-from pybodn._filter import Filters, checked
+from pybodn._filter import Filter, Filters, checked
 from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit, SearchMode
 from pybodn._search import query_terms
-from pybodn._storage.base import Store, ensure_open
+from pybodn._storage.base import NO_VECTORS, Lookup, Store, Vector, ensure_open
+from pybodn._words import words
 from pybodn.errors import (
     ConcurrentUpdateError,
     ConfigurationError,
@@ -22,6 +23,9 @@ from pybodn.errors import (
 )
 
 type Clock = Callable[[], datetime]
+
+# Turns texts into the vectors an embedding model gives them, one for each, in the same order.
+type Vectorize = Callable[[Sequence[str]], list[Vector]]
 
 
 class MemoryFields(TypedDict, total=False):
@@ -58,15 +62,23 @@ _FIELD_CHECKS: dict[str, Callable[[object], Any]] = {
 
 
 class Collection:
-    """The records of one namespace. Get it from ``MemoryEngine.collection()``."""
+    """The records of one namespace. Get it from ``MemoryEngine.collection()``.
 
-    __slots__ = ("_clock", "_namespace", "_store")
+    With an embedding model, every write of a new text asks the model for its vector first,
+    outside the store's lock, and writes nothing if the model fails.
+    """
 
-    def __init__(self, store: Store, namespace: str, clock: Clock) -> None:
-        """Internal: use ``MemoryEngine.collection()``."""
+    __slots__ = ("_clock", "_namespace", "_store", "_vectorize")
+
+    def __init__(
+        self, store: Store, namespace: str, clock: Clock, vectorize: Vectorize | None
+    ) -> None:
+        """Internal: use ``MemoryEngine.collection()``. ``vectorize`` is ``None`` without a
+        model."""
         self._store = store
         self._namespace = namespace
         self._clock = clock
+        self._vectorize = vectorize
 
     @property
     def namespace(self) -> str:
@@ -88,7 +100,7 @@ class Collection:
             make(id=uuid4().hex, created_at=now, updated_at=now, version=1) for make in makers
         ]
         _reject_repeated_keys(records)
-        self._store.insert(records)
+        self._store.insert(records, vectors=self._vectors_of(records))
         return records
 
     def put(self, key: str, content: str, **fields: Unpack[MemoryFields]) -> MemoryRecord:
@@ -101,6 +113,8 @@ class Collection:
         validate.reject_unknown("put", fields, MemoryFields.__optional_keys__)
         checked_key = validate.text("key", key)
         make = _prepare(self._namespace, NewMemory(content, key=checked_key, **fields))
+        text = make.keywords["content"]
+        vector = self._vector_for("key", checked_key, text, creates=True)
 
         def build(current: MemoryRecord | None) -> MemoryRecord:
             now = self._clock()
@@ -113,7 +127,7 @@ class Collection:
                 version=current.version + 1,
             )
 
-        return self._store.modify(self._namespace, "key", checked_key, build)
+        return self._store.modify(self._namespace, "key", checked_key, build, vector=vector)
 
     def get(self, id: str) -> MemoryRecord | None:
         """The record with this id, or ``None``."""
@@ -137,6 +151,8 @@ class Collection:
         checked = _check_changes(changes)
         checked_id = validate.text("id", id)
         expected = validate.expected_version(expected_version)
+        text = checked.get("content")
+        vector = None if text is None else self._vector_for("id", checked_id, text, creates=False)
 
         def build(current: MemoryRecord | None) -> MemoryRecord:
             if current is None:
@@ -151,7 +167,7 @@ class Collection:
                 current, **checked, updated_at=self._clock(), version=current.version + 1
             )
 
-        return self._store.modify(self._namespace, "id", checked_id, build)
+        return self._store.modify(self._namespace, "id", checked_id, build, vector=vector)
 
     def delete(self, id: str) -> bool:
         """Remove the record. ``False`` if there was none, so repeating is safe."""
@@ -195,28 +211,66 @@ class Collection:
     ) -> builtins.list[SearchHit]:
         """The records that best match ``query``, best first: at most ``limit`` of them.
 
-        A record matches if it holds any word of the query, in any case, with or without
-        stress marks and apostrophes. A word also finds its forms with another ending:
-        "алергії" finds "алергія". More of the query's words, rarer words and the exact forms
-        rank a record higher; equal scores keep the order the records were added in. A query
-        without words finds nothing. Filters are those ``list`` takes.
+        ``mode="text"`` searches by words, and so does ``"auto"``. A record matches if it
+        holds any word of the query, in any case, with or without stress marks and
+        apostrophes. A word also finds its forms with another ending: "алергії" finds
+        "алергія". More of the query's words, rarer words and the exact forms rank a record
+        higher.
 
-        ``mode="text"`` searches by words, and so does ``"auto"``. ``mode="vector"`` searches
-        by meaning, which needs an embedding model, and raises ``ConfigurationError``.
+        ``mode="vector"`` searches by meaning, and needs the engine's embedding model: the
+        records whose vectors are closest to the query's come first, however far, each scored
+        by its similarity to the query from -1 to 1. A record without a vector of the model is
+        not found: see ``MemoryEngine.embed_missing()``.
+
+        Equal scores keep the order the records were added in. A query without words finds
+        nothing. Filters are those ``list`` takes.
         """
         ensure_open(self._store)
         where = checked("search", filters)
         text = validate.query(query)
         checked_limit = validate.search_limit(limit)
         if validate.mode(mode) == "vector":
-            raise ConfigurationError(
-                "mode='vector' searches by meaning and needs an embedding model; this engine"
-                " has none"
-            )
+            return self._search_by_meaning(text, where, checked_limit)
         terms = query_terms(text)
         if not terms:
             return []
         return self._store.search_words(self._namespace, terms, where=where, limit=checked_limit)
+
+    def _search_by_meaning(self, query: str, where: Filter, limit: int) -> builtins.list[SearchHit]:
+        if self._vectorize is None:
+            raise ConfigurationError(
+                "mode='vector' searches by meaning and needs an embedding model; this engine"
+                " has none"
+            )
+        if not words(query):
+            return []
+        [vector] = self._vectorize([query])
+        return self._store.search_vectors(self._namespace, vector, where=where, limit=limit)
+
+    def _vectors_of(self, records: Sequence[MemoryRecord]) -> Mapping[str, Vector]:
+        """The vector of each record's text, by the record's id; none without a model."""
+        if self._vectorize is None:
+            return NO_VECTORS
+        vectors = self._vectorize([record.content for record in records])
+        return {record.id: vector for record, vector in zip(records, vectors, strict=True)}
+
+    def _vector_for(self, by: Lookup, value: str, text: str, *, creates: bool) -> Vector | None:
+        """The vector of ``text`` for a write over the record ``by`` finds, if it needs one: there
+        is a model, and that record holds another text, or there is none and the write
+        ``creates`` one.
+
+        The record is read before the write, so that the model never holds up the store. If it
+        changes in between, the store's ``vector_after`` still keeps a vector only with its text.
+        """
+        if self._vectorize is None:
+            return None
+        current = self._store.get(self._namespace, by, value)
+        if current is None and not creates:  # the write will fail: there is nothing to change
+            return None
+        if current is not None and current.content == text:  # the record keeps its vector
+            return None
+        [vector] = self._vectorize([text])
+        return vector
 
 
 def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:

@@ -27,6 +27,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+# Search by meaning computes with NumPy; without an embedding model it is never imported.
+vector = ["numpy>=2.0"]
+
 [project.urls]
 Homepage = "https://github.com/BALDEJ1/pybodn"
 Repository = "https://github.com/BALDEJ1/pybodn"
@@ -69,3 +73,8 @@ dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.5",
 ]
+# The tests and type checks need NumPy; the CI job that checks pybodn without it leaves this out.
+vector = ["pybodn[vector]"]
+
+[tool.uv]
+default-groups = ["dev", "vector"]

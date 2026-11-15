@@ -1,7 +1,8 @@
 """The contract every storage implements.
 
 A store makes no decisions: it only reads and writes, atomically. Checks, ids, times,
-versions and what ``put`` and ``update`` mean live above it, once for every store.
+versions, what ``put`` and ``update`` mean, and what becomes of a record's vector live above
+it or here, once for every store.
 
 Errors: whatever ``build`` raises, and any pybodn error, passes through unchanged. A
 failure of the storage itself becomes ``StorageError`` with the original as its cause.
@@ -9,19 +10,56 @@ Any call after ``close()`` raises ``EngineClosedError``.
 """
 
 import builtins
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import Enum
+from types import MappingProxyType
 from typing import Literal, Protocol
 
 from pybodn._filter import Filter
 from pybodn._models import MemoryRecord, SearchHit
 from pybodn._search import Term
-from pybodn.errors import DuplicateKeyError, EngineClosedError
+from pybodn.errors import DuplicateKeyError, EmbeddingError, EngineClosedError
 
 # The field that ``value`` is matched against.
 type Lookup = Literal["id", "key"]
 
 # Turns the current record, or ``None`` if there is none, into the record to write.
 type Build = Callable[[MemoryRecord | None], MemoryRecord]
+
+# Each number of a stored vector is a float of this many bytes, in little-endian order.
+FLOAT_BYTES = 4
+
+
+@dataclass(frozen=True, slots=True)
+class Vector:
+    """What ``model`` made of ``text``: ``data`` is the vector at unit length, as stored."""
+
+    model: str
+    text: str
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class MissingVector:
+    """A record that has no vector of a model: its place in the order added, and its text."""
+
+    seq: int
+    namespace: str
+    id: str
+    text: str
+
+
+class Unchanged(Enum):
+    """A write that leaves the record's vector as it is."""
+
+    VECTOR = "the record's vector stays"
+
+
+UNCHANGED = Unchanged.VECTOR
+
+# No vectors to write along with records.
+NO_VECTORS: Mapping[str, Vector] = MappingProxyType({})
 
 
 class Store(Protocol):
@@ -34,25 +72,30 @@ class Store(Protocol):
     def get(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         """The record of ``namespace`` whose ``by`` equals ``value``, or ``None``."""
 
-    def insert(self, records: Sequence[MemoryRecord]) -> None:
-        """Write every record, or none of them.
+    def insert(
+        self, records: Sequence[MemoryRecord], *, vectors: Mapping[str, Vector] = NO_VECTORS
+    ) -> None:
+        """Write every record, with the vector ``vectors`` holds under its id, or none of them.
 
-        A key already used in the namespace raises ``DuplicateKeyError``. The caller sees to
-        it that ``records`` never repeat a key among themselves.
+        A key already used in the namespace raises ``DuplicateKeyError``, and a vector of
+        another length than its model's stored vectors ``EmbeddingError``. The caller sees to it
+        that ``records`` never repeat a key among themselves.
         """
 
-    def modify(self, namespace: str, by: Lookup, value: str, build: Build) -> MemoryRecord:
+    def modify(
+        self, namespace: str, by: Lookup, value: str, build: Build, *, vector: Vector | None = None
+    ) -> MemoryRecord:
         """Find a record, let ``build`` decide what to write, write it: one atomic step.
 
         ``build`` gets the current record, or ``None``, and must not change it. Its result
         stays in ``namespace``. If there is a current record, the result keeps its id and
         key and replaces it in place; if not, the result is added at the end and, when
         looked up by key, has that key. If ``build`` raises, nothing is written.
-        Returns the result.
+        The record's vector becomes what ``vector_after`` says. Returns the result.
         """
 
     def delete(self, namespace: str, id: str) -> bool:
-        """Remove the record. ``False`` if there was none."""
+        """Remove the record and its vector. ``False`` if there was none."""
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
@@ -76,8 +119,81 @@ class Store(Protocol):
         the records were added in. ``terms`` is never empty.
         """
 
+    def search_vectors(
+        self, namespace: str, query: Vector, *, where: Filter, limit: int
+    ) -> builtins.list[SearchHit]:
+        """The ``limit`` records of ``namespace`` that ``where`` keeps whose vectors of
+        ``query.model`` are closest to ``query``.
+
+        ``pybodn._vectors.best`` picks and scores them from those records, in the order added.
+        No vectors of the model at all find nothing; a ``query`` of another length than them
+        raises ``EmbeddingError``.
+        """
+
+    def last_seq(self) -> int:
+        """The place of the last record in the order added, across namespaces; 0 if none."""
+
+    def missing_vectors(
+        self, model: str, *, after: int, until: int, limit: int
+    ) -> builtins.list[MissingVector]:
+        """At most ``limit`` records without a vector of ``model``, in the order added, from
+        the place after ``after`` up to ``until``."""
+
+    def write_vectors(self, vectors: Sequence[tuple[MissingVector, Vector]]) -> int:
+        """Give each record its vector if it still holds the text the vector was made from,
+        all at once, replacing any vector of another model. Returns how many it gave.
+
+        A vector of another length than its model's stored vectors raises ``EmbeddingError``.
+        """
+
     def close(self) -> None:
         """Release the storage. Safe to call again."""
+
+
+def vector_after(
+    current: MemoryRecord | None,
+    record: MemoryRecord,
+    vector: Vector | None,
+    stored_size: Callable[[str], int | None],
+) -> Vector | Unchanged | None:
+    """The vector ``record`` has once written over ``current``, given ``vector``, made for it if
+    any: that vector, ``UNCHANGED`` for the one it has, or ``None`` for none.
+
+    A record only ever has a vector of the text it holds: the new vector if it was made from the
+    text written, else the old one if the text stays, else none. A new vector must be as long as
+    its model's stored vectors, which ``stored_size(model)`` tells, or ``EmbeddingError``.
+    """
+    if vector is not None and vector.text == record.content:
+        check_size(vector, stored_size(vector.model))
+        return vector
+    if current is not None and current.content == record.content:
+        return UNCHANGED
+    return None
+
+
+def check_size(vector: Vector, stored: int | None) -> None:
+    """Raise ``EmbeddingError`` unless ``vector`` is ``stored`` bytes long, as its model's stored
+    vectors are; ``None`` if there are none yet."""
+    if stored is not None and stored != len(vector.data):
+        raise EmbeddingError(
+            f"model {vector.model!r} gave a vector of length {len(vector.data) // FLOAT_BYTES},"
+            f" but its stored vectors have length {stored // FLOAT_BYTES}: give a model of"
+            " another size another name"
+        )
+
+
+def check_sizes(vectors: Iterable[Vector], stored_size: Callable[[str], int | None]) -> None:
+    """Raise ``EmbeddingError`` unless each vector is as long as its model's stored vectors, or,
+    for a model with none stored yet, as its first vector here.
+
+    ``stored_size(model)`` tells how many bytes long the stored vectors of ``model`` are.
+    """
+    sizes: dict[str, int | None] = {}
+    for vector in vectors:
+        if vector.model not in sizes:
+            sizes[vector.model] = stored_size(vector.model)
+        check_size(vector, sizes[vector.model])
+        sizes[vector.model] = len(vector.data)
 
 
 def reject_stored_keys(

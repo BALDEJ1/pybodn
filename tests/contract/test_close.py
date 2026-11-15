@@ -5,10 +5,11 @@ import pytest
 from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
 from pybodn._filter import EVERYTHING
 from pybodn._search import Term
-from pybodn._storage.base import Store
+from pybodn._storage.base import Store, Vector
 from pybodn.errors import EngineClosedError
 
 MISSING_ID = "0" * 32
+QUERY = Vector("fake-1", "Python", b"\x00\x00\x80\x3f")
 
 ACTIONS: dict[str, Callable[[Collection], object]] = {
     "add": lambda notes: notes.add("Prefers Python"),
@@ -70,6 +71,12 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "search_words": lambda store: store.search_words(
         "user:123", (Term("python", is_prefix=False),), where=EVERYTHING, limit=10
     ),
+    "search_vectors": lambda store: store.search_vectors(
+        "user:123", QUERY, where=EVERYTHING, limit=10
+    ),
+    "last_seq": lambda store: store.last_seq(),
+    "missing_vectors": lambda store: store.missing_vectors("fake-1", after=0, until=1, limit=10),
+    "write_vectors": lambda store: store.write_vectors([]),
 }
 
 
@@ -97,6 +104,13 @@ def test_a_closed_engine_cannot_be_entered_again(engine: MemoryEngine) -> None:
     engine.close()
     with pytest.raises(EngineClosedError), engine:
         pass
+
+
+def test_embed_missing_after_close_raises_engine_closed_error(engine: MemoryEngine) -> None:
+    # Closed is reported before the missing model.
+    engine.close()
+    with pytest.raises(EngineClosedError):
+        engine.embed_missing()
 
 
 def test_close_can_be_called_again(engine: MemoryEngine) -> None:
