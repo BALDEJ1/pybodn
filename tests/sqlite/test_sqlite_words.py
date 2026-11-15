@@ -1,5 +1,6 @@
 """The word index in the file: every write keeps it exact, opening fills it again when it was
-built under older rules, and a process that a newer pybodn has overtaken stops before writing."""
+built under older rules, and a process that a newer pybodn has overtaken stops before it writes or
+searches."""
 
 import sqlite3
 from collections.abc import Callable
@@ -16,20 +17,30 @@ from pybodn.errors import StorageError
 from tests.sqlite.support import run_sql
 
 
-def query(path: Path, sql: str) -> list[Any]:
+def query(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[Any]:
     with closing(sqlite3.connect(path, autocommit=True)) as connection:
         connection.execute(
             "CREATE VIRTUAL TABLE temp.vocabulary USING fts5vocab(main, memory_words, instance)"
         )
-        return connection.execute(sql).fetchall()
+        return connection.execute(sql, parameters).fetchall()
 
 
-def assert_index_holds_the_words_of_every_record(path: Path) -> None:
+def indexed(path: Path, column: str) -> dict[int, list[str]]:
+    """The tokens the word index holds in ``column``, by seq, in order."""
     held: dict[int, list[str]] = {}
-    for seq, word in query(path, "SELECT doc, term FROM temp.vocabulary ORDER BY doc, offset"):
-        held.setdefault(seq, []).append(word)
-    texts = query(path, "SELECT seq, content FROM memories")
-    assert held == {seq: words(text) for seq, text in texts if words(text)}
+    sql = "SELECT doc, term FROM temp.vocabulary WHERE col = ? ORDER BY doc, offset"
+    for seq, token in query(path, sql, (column,)):
+        held.setdefault(seq, []).append(token)
+    return held
+
+
+def assert_index_holds_every_record(path: Path) -> None:
+    """The index holds each record's words and its namespace's token, and nothing else."""
+    records = query(path, "SELECT seq, namespace, content FROM memories")
+    assert indexed(path, "words") == {seq: words(text) for seq, _, text in records if words(text)}
+    assert indexed(path, "namespace_token") == {
+        seq: [namespace.encode().hex()] for seq, namespace, _ in records
+    }
 
 
 def index_data(path: Path) -> list[Any]:
@@ -86,7 +97,7 @@ def test_every_write_keeps_the_word_index_exact(
     with MemoryEngine.sqlite(path) as engine:
         write(*prepare(engine))
 
-    assert_index_holds_the_words_of_every_record(path)
+    assert_index_holds_every_record(path)
 
 
 @pytest.mark.parametrize("write", ["put-same-text", "update-tags"])
@@ -113,7 +124,7 @@ def test_words_that_pybodn_0_1_0_left_behind_do_not_block_the_next_record(path: 
         notes.add("Новий запис")
 
     # Assert
-    assert_index_holds_the_words_of_every_record(path)
+    assert_index_holds_every_record(path)
 
 
 def make_0_1_0_file(path: Path) -> None:
@@ -150,7 +161,7 @@ def test_opening_a_file_without_an_up_to_date_word_index_fills_it(
     MemoryEngine.sqlite(path).close()
 
     # Assert
-    assert_index_holds_the_words_of_every_record(path)
+    assert_index_holds_every_record(path)
     assert word_rules(path) == [(WORD_RULES,)]
     assert run_sql(path, "PRAGMA user_version") == [(len(schema.MIGRATIONS),)]
 
@@ -168,20 +179,24 @@ def test_opening_an_up_to_date_file_leaves_the_word_index_alone(path: Path) -> N
     assert index_data(path) == before
 
 
-def test_a_record_whose_text_is_damaged_has_no_words_and_the_file_still_opens(
-    path: Path,
+@pytest.mark.parametrize(
+    ("damaged", "column"),
+    [("content", "words"), ("namespace", "namespace_token")],
+    ids=["text", "namespace"],
+)
+def test_a_damaged_value_is_left_out_of_the_index_and_the_file_still_opens(
+    path: Path, damaged: str, column: str
 ) -> None:
     # Arrange
     make_0_1_0_file(path)
-    run_sql(path, "UPDATE memories SET content = x'00' WHERE namespace = 'user:2'")
+    whole = run_sql(path, "SELECT seq FROM memories WHERE namespace = 'user:1' ORDER BY seq")
+    run_sql(path, f"UPDATE memories SET {damaged} = x'00' WHERE namespace = 'user:2'")  # noqa: S608
 
     # Act
     MemoryEngine.sqlite(path).close()
 
     # Assert
-    held = query(path, "SELECT DISTINCT doc FROM temp.vocabulary ORDER BY doc")
-    whole = run_sql(path, "SELECT seq FROM memories WHERE namespace = 'user:1' ORDER BY seq")
-    assert held == whole
+    assert sorted(indexed(path, column)) == [seq for (seq,) in whole]
 
 
 # What a newer pybodn leaves behind when it upgrades the file under a running process.
@@ -209,6 +224,20 @@ def test_a_process_overtaken_by_a_newer_pybodn_stops_before_its_next_write(
             write(notes, others)
         assert run_sql(path, "SELECT * FROM memories ORDER BY seq") == before
         assert len(notes.list()) == 2  # reading still works
+
+
+@pytest.mark.parametrize("upgrade", UPGRADES.values(), ids=UPGRADES.keys())
+def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_searches(
+    path: Path, upgrade: tuple[str, tuple[object, ...]]
+) -> None:
+    with MemoryEngine.sqlite(path) as engine:
+        # Arrange: the index may now follow other rules than this process prepares the query by
+        notes, _ = prepare(engine)
+        run_sql(path, *upgrade)
+
+        # Act / Assert
+        with pytest.raises(StorageError, match="restart"):
+            notes.search("кава")
 
 
 def test_an_sqlite_without_the_word_index_it_needs_is_refused_before_the_file_changes(

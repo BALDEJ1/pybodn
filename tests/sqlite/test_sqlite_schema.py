@@ -103,7 +103,7 @@ def test_each_version_keeps_its_layout(path: Path) -> None:
     )
     assert settings == [("name", "TEXT", 0, 1), ("value", "", 1, 0)]
     assert run_sql(path, "SELECT sql FROM sqlite_master WHERE name = 'memory_words'") == [
-        ("CREATE VIRTUAL TABLE memory_words USING fts5(words, tokenize='ascii')",)
+        ("CREATE VIRTUAL TABLE memory_words USING fts5(words, namespace_token, tokenize='ascii')",)
     ]
 
 

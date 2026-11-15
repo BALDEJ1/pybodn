@@ -10,10 +10,12 @@ from uuid import uuid4
 
 from pybodn import _validation as validate
 from pybodn._filter import Filters, checked
-from pybodn._models import JSONValue, MemoryRecord, NewMemory
+from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit, SearchMode
+from pybodn._search import query_terms
 from pybodn._storage.base import Store, ensure_open
 from pybodn.errors import (
     ConcurrentUpdateError,
+    ConfigurationError,
     DuplicateKeyError,
     RecordNotFoundError,
     ValidationError,
@@ -182,6 +184,39 @@ class Collection:
         """The number of records, or of those that pass the filters ``list`` takes."""
         ensure_open(self._store)
         return self._store.count(self._namespace, where=checked("count", filters))
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        mode: SearchMode = "auto",
+        **filters: Unpack[Filters],
+    ) -> builtins.list[SearchHit]:
+        """The records that best match ``query``, best first: at most ``limit`` of them.
+
+        A record matches if it holds any word of the query, in any case, with or without
+        stress marks and apostrophes. A word also finds its forms with another ending:
+        "алергії" finds "алергія". More of the query's words, rarer words and the exact forms
+        rank a record higher; equal scores keep the order the records were added in. A query
+        without words finds nothing. Filters are those ``list`` takes.
+
+        ``mode="text"`` searches by words, and so does ``"auto"``. ``mode="vector"`` searches
+        by meaning, which needs an embedding model, and raises ``ConfigurationError``.
+        """
+        ensure_open(self._store)
+        where = checked("search", filters)
+        text = validate.query(query)
+        checked_limit = validate.search_limit(limit)
+        if validate.mode(mode) == "vector":
+            raise ConfigurationError(
+                "mode='vector' searches by meaning and needs an embedding model; this engine"
+                " has none"
+            )
+        terms = query_terms(text)
+        if not terms:
+            return []
+        return self._store.search_words(self._namespace, terms, where=where, limit=checked_limit)
 
 
 def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:

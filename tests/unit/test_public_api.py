@@ -12,6 +12,7 @@ PUBLIC_NAMES = [
     "MemoryEngine",
     "MemoryRecord",
     "NewMemory",
+    "SearchHit",
     "__version__",
 ]
 
@@ -39,6 +40,7 @@ def test_every_documented_name_can_be_imported(name: str) -> None:
         (Collection.delete, ["id"]),
         (Collection.list, []),
         (Collection.count, []),
+        (Collection.search, ["query"]),
     ],
 )
 def test_only_required_parameters_can_be_passed_by_position(

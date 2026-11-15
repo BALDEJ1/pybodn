@@ -185,7 +185,26 @@ def test_bad_offset_is_rejected(notes: Collection, offset: Any) -> None:
         notes.list(offset=offset)
 
 
-# One bad value per filter, to show that each reaches its check through list() and count().
+@pytest.mark.parametrize("limit", [0, -1, MAX_INTEGER + 1, True, 1.0, "1", None])
+def test_bad_search_limit_is_rejected(notes: Collection, limit: Any) -> None:
+    with pytest.raises(ValidationError, match="^limit must be"):
+        notes.search("Python", limit=limit)
+
+
+@pytest.mark.parametrize("mode", ["", "TEXT", "hybrid", "exact", None, 1])
+def test_bad_search_mode_is_rejected(notes: Collection, mode: Any) -> None:
+    with pytest.raises(ValidationError, match="^mode must be"):
+        notes.search("Python", mode=mode)
+
+
+@pytest.mark.parametrize("query", [None, 1, b"Python", ["Python"], LONE_SURROGATE])
+def test_bad_query_is_rejected(notes: Collection, query: Any) -> None:
+    with pytest.raises(ValidationError, match="^query must"):
+        notes.search(query)
+
+
+# One bad value per filter, to show that each reaches its check through every method that takes
+# filters.
 # What each check accepts and rejects is tested in tests/unit/test_validation.py.
 BAD_FILTERS = [
     pytest.param({"tags": [""]}, "tag must not be empty", id="tags"),
@@ -196,13 +215,21 @@ BAD_FILTERS = [
 ]
 
 
+# Each method that takes filters, called with them.
+WITH_FILTERS: dict[str, Callable[[Collection, dict[str, Any]], object]] = {
+    "list": lambda notes, filters: notes.list(**filters),
+    "count": lambda notes, filters: notes.count(**filters),
+    "search": lambda notes, filters: notes.search("Python", **filters),
+}
+
+
 @pytest.mark.parametrize(("filters", "message"), BAD_FILTERS)
-@pytest.mark.parametrize("method", ["list", "count"])
+@pytest.mark.parametrize("method", WITH_FILTERS)
 def test_a_bad_filter_is_rejected(
     notes: Collection, method: str, filters: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ValidationError, match=f"^{message}"):
-        getattr(notes, method)(**filters)
+        WITH_FILTERS[method](notes, filters)
 
 
 # Like any Python function, a misspelled keyword is a TypeError that names the method called.
@@ -212,6 +239,7 @@ UNKNOWN_FIELD: dict[str, Callable[[Collection], object]] = {
     "update": lambda notes: notes.update(notes.add("Python").id, colour="red"),  # type: ignore[call-arg]
     "list": lambda notes: notes.list(colour="red"),  # type: ignore[call-arg]
     "count": lambda notes: notes.count(colour="red"),  # type: ignore[call-arg]
+    "search": lambda notes: notes.search("Python", colour="red"),  # type: ignore[call-arg]
 }
 
 

@@ -4,7 +4,7 @@ from importlib.metadata import version
 
 from pybodn._collection import Collection
 from pybodn._engine import MemoryEngine
-from pybodn._models import JSONValue, MemoryRecord, NewMemory
+from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit
 
 __version__ = version("pybodn")
 
@@ -14,5 +14,6 @@ __all__ = [
     "MemoryEngine",
     "MemoryRecord",
     "NewMemory",
+    "SearchHit",
     "__version__",
 ]

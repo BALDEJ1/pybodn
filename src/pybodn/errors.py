@@ -2,6 +2,7 @@
 
 __all__ = [
     "ConcurrentUpdateError",
+    "ConfigurationError",
     "DuplicateKeyError",
     "EngineClosedError",
     "PyBodnError",
@@ -37,3 +38,7 @@ class StorageError(PyBodnError):
 
 class EngineClosedError(PyBodnError):
     """The engine was used after ``close()``."""
+
+
+class ConfigurationError(PyBodnError):
+    """The engine is not set up for what was asked, such as a search by meaning without a model."""

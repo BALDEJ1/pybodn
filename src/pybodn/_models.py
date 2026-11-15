@@ -1,13 +1,17 @@
-"""Memory records and the values they are created from."""
+"""Memory records, the values they are created from, and what a search finds."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
+from typing import Literal
 
 type JSONValue = JSONScalar | list[JSONValue] | dict[str, JSONValue]
 
 # A JSON value that is not a list or an object: what a metadata filter compares a field with.
 type JSONScalar = str | int | float | bool | None
+
+# How a search looks for records: by words, by meaning, or by whatever the engine can.
+type SearchMode = Literal["auto", "text", "vector"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,3 +42,11 @@ class MemoryRecord:
     created_at: datetime
     updated_at: datetime
     version: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchHit:
+    """A record a search found. A higher ``score`` is a better match, within one search only."""
+
+    record: MemoryRecord
+    score: float

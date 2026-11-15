@@ -13,7 +13,8 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import Literal, Protocol
 
 from pybodn._filter import Filter
-from pybodn._models import MemoryRecord
+from pybodn._models import MemoryRecord, SearchHit
+from pybodn._search import Term
 from pybodn.errors import DuplicateKeyError, EngineClosedError
 
 # The field that ``value`` is matched against.
@@ -64,6 +65,16 @@ class Store(Protocol):
 
     def count(self, namespace: str, *, where: Filter) -> int:
         """The number of records in ``namespace`` that ``where`` keeps, as ``list`` does."""
+
+    def search_words(
+        self, namespace: str, terms: Sequence[Term], *, where: Filter, limit: int
+    ) -> builtins.list[SearchHit]:
+        """The best ``limit`` records of ``namespace`` that ``where`` keeps and a term finds.
+
+        A record scores as ``pybodn._search.bm25_scores`` scores it among every record of the
+        store, other namespaces included; the best come first, and equal scores keep the order
+        the records were added in. ``terms`` is never empty.
+        """
 
     def close(self) -> None:
         """Release the storage. Safe to call again."""

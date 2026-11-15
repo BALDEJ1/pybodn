@@ -128,6 +128,11 @@ def from_list(notes: Collection) -> MemoryRecord | None:
     return notes.list()[0]
 
 
+def from_search(notes: Collection) -> MemoryRecord | None:
+    notes.add("Python", key="language", metadata={"list": [1]})
+    return notes.search("Python")[0].record
+
+
 def from_update_of_metadata(notes: Collection) -> MemoryRecord | None:
     record = notes.add("Python", key="language", metadata={"other": 0})
     return notes.update(record.id, metadata={"list": [1]})
@@ -147,6 +152,7 @@ def from_update_of_content(notes: Collection) -> MemoryRecord | None:
         from_get,
         from_get_by_key,
         from_list,
+        from_search,
         from_update_of_metadata,
         from_update_of_content,
     ],

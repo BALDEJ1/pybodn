@@ -4,6 +4,7 @@ import pytest
 
 from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
 from pybodn._filter import EVERYTHING
+from pybodn._search import Term
 from pybodn._storage.base import Store
 from pybodn.errors import EngineClosedError
 
@@ -20,6 +21,7 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "delete": lambda notes: notes.delete(MISSING_ID),
     "list": lambda notes: notes.list(),
     "count": lambda notes: notes.count(),
+    "search": lambda notes: notes.search("Python"),
     # Closed is reported before bad input, as sqlite3 does for a closed connection.
     "add-with-bad-content": lambda notes: notes.add(""),
     "add-with-unknown-field": lambda notes: notes.add("a", colour="red"),  # type: ignore[call-arg]
@@ -34,6 +36,9 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "list-with-bad-filter": lambda notes: notes.list(min_importance=2),
     "count-with-bad-filter": lambda notes: notes.count(tags="health"),
     "count-with-unknown-filter": lambda notes: notes.count(colour="red"),  # type: ignore[call-arg]
+    "search-without-words": lambda notes: notes.search("?!"),
+    "search-with-bad-mode": lambda notes: notes.search("Python", mode="nope"),  # type: ignore[arg-type]
+    "search-by-meaning": lambda notes: notes.search("Python", mode="vector"),
 }
 
 
@@ -62,6 +67,9 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "delete": lambda store: store.delete("user:123", MISSING_ID),
     "list": lambda store: store.list("user:123", where=EVERYTHING, limit=None, offset=0),
     "count": lambda store: store.count("user:123", where=EVERYTHING),
+    "search_words": lambda store: store.search_words(
+        "user:123", (Term("python", is_prefix=False),), where=EVERYTHING, limit=10
+    ),
 }
 
 

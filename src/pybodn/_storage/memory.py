@@ -7,8 +7,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 from pybodn._filter import EVERYTHING, Filter
-from pybodn._models import MemoryRecord
+from pybodn._models import MemoryRecord, SearchHit
+from pybodn._search import Term, bm25_scores
 from pybodn._storage.base import Build, Lookup, ensure_open, reject_stored_keys
+from pybodn._words import words
 
 
 @dataclass(slots=True)
@@ -83,6 +85,24 @@ class InMemoryStore:
         with self._lock:
             ensure_open(self)
             return len(self._kept(namespace, where))
+
+    def search_words(
+        self, namespace: str, terms: Sequence[Term], *, where: Filter, limit: int
+    ) -> builtins.list[SearchHit]:
+        with self._lock:
+            ensure_open(self)
+            # Words are prepared afresh for every search: this store is for tests and small data.
+            records = [
+                record for space in self._namespaces.values() for record in space.records.values()
+            ]
+            scores = bm25_scores(terms, [words(record.content) for record in records])
+            found = [
+                (score, record)
+                for record, score in zip(records, scores, strict=True)
+                if score is not None and record.namespace == namespace and where.matches(record)
+            ]
+            found.sort(key=lambda hit: hit[0], reverse=True)  # stable: ties keep the order added
+            return [SearchHit(record=_copy(record), score=score) for score, record in found[:limit]]
 
     def close(self) -> None:
         with self._lock:
