@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -184,11 +185,33 @@ def test_bad_offset_is_rejected(notes: Collection, offset: Any) -> None:
         notes.list(offset=offset)
 
 
+# One bad value per filter, to show that each reaches its check through list() and count().
+# What each check accepts and rejects is tested in tests/unit/test_validation.py.
+BAD_FILTERS = [
+    pytest.param({"tags": [""]}, "tag must not be empty", id="tags"),
+    pytest.param({"metadata": {"topic": ["food"]}}, "metadata values to match", id="metadata"),
+    pytest.param({"min_importance": 1.5}, "min_importance must be", id="min_importance"),
+    pytest.param({"created_since": datetime(2026, 1, 1)}, "created_since must be", id="since"),
+    pytest.param({"created_before": datetime(2026, 1, 1)}, "created_before must be", id="before"),
+]
+
+
+@pytest.mark.parametrize(("filters", "message"), BAD_FILTERS)
+@pytest.mark.parametrize("method", ["list", "count"])
+def test_a_bad_filter_is_rejected(
+    notes: Collection, method: str, filters: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=f"^{message}"):
+        getattr(notes, method)(**filters)
+
+
 # Like any Python function, a misspelled keyword is a TypeError that names the method called.
 UNKNOWN_FIELD: dict[str, Callable[[Collection], object]] = {
     "add": lambda notes: notes.add("Python", colour="red"),  # type: ignore[call-arg]
     "put": lambda notes: notes.put("language", "Python", colour="red"),  # type: ignore[call-arg]
     "update": lambda notes: notes.update(notes.add("Python").id, colour="red"),  # type: ignore[call-arg]
+    "list": lambda notes: notes.list(colour="red"),  # type: ignore[call-arg]
+    "count": lambda notes: notes.count(colour="red"),  # type: ignore[call-arg]
 }
 
 

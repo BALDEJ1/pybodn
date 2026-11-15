@@ -4,7 +4,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
 
-type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+type JSONValue = JSONScalar | list[JSONValue] | dict[str, JSONValue]
+
+# A JSON value that is not a list or an object: what a metadata filter compares a field with.
+type JSONScalar = str | int | float | bool | None
 
 
 @dataclass(frozen=True, slots=True)

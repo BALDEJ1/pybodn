@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from pybodn._filter import EVERYTHING
 from pybodn._models import JSONValue, MemoryRecord
 from pybodn._storage.memory import InMemoryStore
 
@@ -47,7 +48,7 @@ def test_a_batch_that_fails_to_copy_writes_nothing() -> None:
     # Act / Assert
     with pytest.raises(RecursionError):
         store.insert(batch)
-    assert store.count("user:123") == 0
+    assert store.count("user:123", where=EVERYTHING) == 0
 
 
 def test_deleting_the_last_record_of_a_namespace_releases_the_namespace() -> None:
