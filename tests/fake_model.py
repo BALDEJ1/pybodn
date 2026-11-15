@@ -11,6 +11,11 @@ def vector_of(text: str) -> list[float]:
     return [1.0, *(float(text_words.count(word)) for word in WORDS)]
 
 
+def broken(texts: list[str]) -> list[list[float]]:
+    """A model that is down."""
+    raise RuntimeError("the model is down")
+
+
 class FakeModel:
     """Gives each text its ``vector_of``, and keeps the texts of every call in ``calls``."""
 
