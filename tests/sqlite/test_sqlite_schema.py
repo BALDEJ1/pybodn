@@ -12,6 +12,7 @@ import pytest
 
 from pybodn import MemoryEngine
 from pybodn._storage import schema, sqlite
+from pybodn._words import WORD_RULES
 from pybodn.errors import StorageError
 from tests.sqlite.support import THREADS, WAIT_SECONDS, run_sql
 
@@ -52,7 +53,7 @@ def test_a_missing_or_empty_file_becomes_a_pybodn_file(
     assert_is_pybodn_file(path)
 
 
-def test_version_1_keeps_its_layout(path: Path) -> None:
+def test_each_version_keeps_its_layout(path: Path) -> None:
     # Files already written have exactly this layout: change it with a new migration instead.
     make_pybodn_file(path)
 
@@ -76,6 +77,10 @@ def test_version_1_keeps_its_layout(path: Path) -> None:
     )
     assert indexes == [
         (
+            "ix_memories_namespace_created",
+            "CREATE INDEX ix_memories_namespace_created ON memories (namespace, created_at)",
+        ),
+        (
             "ix_memories_namespace_seq",
             "CREATE INDEX ix_memories_namespace_seq ON memories (namespace, seq)",
         ),
@@ -84,10 +89,21 @@ def test_version_1_keeps_its_layout(path: Path) -> None:
             None,
         ),
         (
+            "sqlite_autoindex_settings_1",  # the one behind the settings' primary key
+            None,
+        ),
+        (
             "ux_memories_namespace_key",
             "CREATE UNIQUE INDEX ux_memories_namespace_key ON memories (namespace, memory_key) "
             "WHERE memory_key IS NOT NULL",
         ),
+    ]
+    settings = run_sql(
+        path, 'SELECT name, type, "notnull", pk FROM pragma_table_info(?)', ("settings",)
+    )
+    assert settings == [("name", "TEXT", 0, 1), ("value", "", 1, 0)]
+    assert run_sql(path, "SELECT sql FROM sqlite_master WHERE name = 'memory_words'") == [
+        ("CREATE VIRTUAL TABLE memory_words USING fts5(words, tokenize='ascii')",)
     ]
 
 
@@ -103,7 +119,7 @@ def test_an_older_file_is_brought_up_to_date(path: Path, monkeypatch: pytest.Mon
 
     # Assert
     assert stored == record
-    assert run_sql(path, "PRAGMA user_version") == [(2,)]
+    assert run_sql(path, "PRAGMA user_version") == [(len(schema.MIGRATIONS),)]
     assert run_sql(path, "SELECT name FROM sqlite_master WHERE name = 'extra'") == [("extra",)]
 
 
@@ -111,6 +127,7 @@ def test_a_failed_migration_changes_nothing(path: Path, monkeypatch: pytest.Monk
     # Arrange
     make_pybodn_file(path)
     before = schema_objects(path)
+    latest = len(schema.MIGRATIONS)
     monkeypatch.setattr(
         schema, "MIGRATIONS", (*schema.MIGRATIONS, ("CREATE TABLE extra (x)", "NOT SQL"))
     )
@@ -119,7 +136,7 @@ def test_a_failed_migration_changes_nothing(path: Path, monkeypatch: pytest.Monk
     with pytest.raises(StorageError) as caught:
         MemoryEngine.sqlite(path)
     assert isinstance(caught.value.__cause__, sqlite3.Error)
-    assert run_sql(path, "PRAGMA user_version") == [(1,)]
+    assert run_sql(path, "PRAGMA user_version") == [(latest,)]
     assert schema_objects(path) == before
 
 
@@ -171,6 +188,11 @@ def pybodn_file_from_the_future(path: Path) -> None:
     run_sql(path, f"PRAGMA user_version = {len(schema.MIGRATIONS) + 1}")
 
 
+def pybodn_file_with_newer_word_rules(path: Path) -> None:
+    make_pybodn_file(path)
+    run_sql(path, "UPDATE settings SET value = ? WHERE name = 'word_rules'", (WORD_RULES + 1,))
+
+
 REFUSED = [
     pytest.param(text_file, "file is not a database", id="text-file"),
     pytest.param(database_with_a_table, "not a pybodn database", id="table"),
@@ -178,6 +200,7 @@ REFUSED = [
     pytest.param(database_of_another_program, "not a pybodn database", id="another-program"),
     pytest.param(database_with_a_version_only, "not a pybodn database", id="version-only"),
     pytest.param(pybodn_file_from_the_future, "newer", id="newer-schema"),
+    pytest.param(pybodn_file_with_newer_word_rules, "newer", id="newer-word-rules"),
 ]
 
 
