@@ -6,7 +6,6 @@ import hashlib
 import random
 import struct
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +16,7 @@ from pybodn._storage import schema, sqlite
 from pybodn._words import WORD_RULES
 from pybodn.errors import StorageError
 from tests.fake_model import FakeModel
-from tests.sqlite.support import make_old_file, run_sql
+from tests.sqlite.support import PAST, make_old_file, run_sql
 
 np = pytest.importorskip("numpy")
 
@@ -94,7 +93,7 @@ def test_a_purge_deletes_the_vectors_of_the_records_it_deletes(path: Path) -> No
     with MemoryEngine.sqlite(path, embedder=MODEL) as engine:
         # Arrange
         notes = engine.collection("user:123")
-        notes.add("кава", expires_at=datetime(2000, 1, 1, tzinfo=UTC))
+        notes.add("кава", expires_at=PAST)
         kept = notes.add("чай")
 
         # Act

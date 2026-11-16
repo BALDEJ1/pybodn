@@ -6,7 +6,6 @@ import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from itertools import islice
 
 from pybodn._filter import EVERYTHING, Filter, is_expired
 from pybodn._models import MemoryRecord, SearchHit
@@ -93,17 +92,13 @@ class InMemoryStore:
     def purge_expired(self, now: datetime, *, limit: int) -> int:
         with self._lock:
             ensure_open(self)
+            # Looks through every record for each batch: this store is for tests and small data.
             expired = [
-                *islice(
-                    (
-                        (namespace, record.id)
-                        for namespace, space in self._namespaces.items()
-                        for record in space.records.values()
-                        if is_expired(record, now)
-                    ),
-                    limit,
-                )
-            ]  # all found before any is removed: a dict cannot change while it is read
+                (namespace, record.id)
+                for namespace, space in self._namespaces.items()
+                for record in space.records.values()
+                if is_expired(record, now)
+            ][:limit]
             for namespace, record_id in expired:
                 self._remove(namespace, record_id)
             return len(expired)

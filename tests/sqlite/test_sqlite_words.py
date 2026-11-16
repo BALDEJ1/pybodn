@@ -5,7 +5,6 @@ searches."""
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +14,7 @@ from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
 from pybodn._storage import schema
 from pybodn._words import WORD_RULES, words
 from pybodn.errors import StorageError
-from tests.sqlite.support import make_old_file, run_sql
-
-PAST = datetime(2000, 1, 1, tzinfo=UTC)
+from tests.sqlite.support import PAST, make_old_file, run_sql
 
 
 def query(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[Any]:

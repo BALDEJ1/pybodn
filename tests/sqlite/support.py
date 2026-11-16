@@ -1,9 +1,10 @@
-"""What the SQLite tests share: timings, and other connections to the file, as another process
-would open them."""
+"""What the SQLite tests share: timings, a moment long past, other connections to the file, as
+another process would open them, and files as older pybodn versions left them."""
 
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pybodn import Embedder, MemoryEngine
@@ -13,6 +14,7 @@ SHORT_WAIT = 0.05  # seconds: enough for a free file, too short to wait out anot
 RELEASE_AFTER = 0.2  # seconds after which another connection frees the file
 WAIT_SECONDS = 10  # seconds: generous for a slow machine, far below a wait that never ends
 THREADS = 8
+PAST = datetime(2000, 1, 1, tzinfo=UTC)  # an expiry long gone on the real clock
 
 
 def run_sql(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[tuple[object, ...]]:
