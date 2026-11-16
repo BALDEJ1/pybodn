@@ -26,11 +26,16 @@ class NewMemory:
     tags: Sequence[str] = ()
     importance: float = 0.5
     source: str | None = None
+    expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MemoryRecord:
-    """A stored memory. The engine creates it; ``version`` grows with every change."""
+    """A stored memory. The engine creates it; ``version`` grows with every change.
+
+    ``expires_at`` is when it expires, if ever, and ``archived_at`` when it was archived, if it
+    is: reads leave such a record out unless asked.
+    """
 
     id: str
     namespace: str
@@ -43,6 +48,8 @@ class MemoryRecord:
     created_at: datetime
     updated_at: datetime
     version: int
+    expires_at: datetime | None
+    archived_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

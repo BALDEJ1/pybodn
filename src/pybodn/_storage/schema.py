@@ -54,4 +54,20 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         # Finds how long a model's stored vectors are.
         "CREATE INDEX ix_memory_vectors_model ON memory_vectors (model)",
     ),
+    (
+        # When a record expires and when it was archived, both NULL for never, as UTC text in
+        # the form of created_at. A read leaves out records with either, unless asked.
+        "ALTER TABLE memories ADD COLUMN expires_at TEXT",
+        "ALTER TABLE memories ADD COLUMN archived_at TEXT",
+        # The two indexes a namespace's reads go through also hold both columns, so that a read
+        # leaves hidden records out without reading their rows.
+        "DROP INDEX ix_memories_namespace_seq",
+        "CREATE INDEX ix_memories_namespace_seq"
+        " ON memories (namespace, seq, archived_at, expires_at)",
+        "DROP INDEX ix_memories_namespace_created",
+        "CREATE INDEX ix_memories_namespace_created"
+        " ON memories (namespace, created_at, archived_at, expires_at)",
+        # Finds the records that have expired, across namespaces, for purge_expired.
+        "CREATE INDEX ix_memories_expires ON memories (expires_at) WHERE expires_at IS NOT NULL",
+    ),
 )

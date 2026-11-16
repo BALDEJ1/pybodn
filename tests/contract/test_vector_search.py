@@ -2,6 +2,7 @@
 record's vector follows its text through every write."""
 
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from pybodn import Collection, Embedder, MemoryEngine, NewMemory, SearchHit
 from pybodn._storage.base import Store
 from pybodn.errors import ConfigurationError, EmbeddingError, RecordNotFoundError
-from tests.contract.conftest import MODEL, engine_on
+from tests.contract.conftest import MODEL, START, engine_on
 from tests.contract.test_search import LOOKALIKE_NAMESPACES
 from tests.fake_model import FakeModel, broken, vector_of
 
@@ -573,3 +574,101 @@ def test_a_failing_model_keeps_the_batches_already_written(store: Store, plain: 
 def test_embed_missing_needs_a_model(store: Store) -> None:
     with pytest.raises(ConfigurationError, match="needs an embedding model"):
         engine_on(store).embed_missing()
+
+
+# hidden records ----------------------------------------------------------------------------------
+
+PAST = START - timedelta(days=1)
+
+
+@pytest.mark.parametrize("mode", ["vector", "auto"])
+def test_a_search_by_meaning_leaves_hidden_records_out_unless_asked(
+    notes: Collection, mode: str
+) -> None:
+    # Arrange
+    archived = notes.archive(notes.add("кава").id)
+    expired = notes.add("кава кава", expires_at=PAST)
+    kept = notes.add("чай")
+
+    # Act
+    def ids(**options: Any) -> list[str]:
+        return [hit.record.id for hit in notes.search("кава", mode=mode, **options)]  # type: ignore[arg-type]
+
+    # Assert: by meaning, every record shown is close enough, however far
+    assert ids() == [kept.id]
+    assert set(ids(include_archived=True, include_expired=True)) == {
+        archived.id,
+        expired.id,
+        kept.id,
+    }
+
+
+@pytest.mark.parametrize("hide", ["archive", "expire"])
+def test_a_new_text_written_into_a_hidden_record_gets_its_vector(
+    notes: Collection, hide: str
+) -> None:
+    # Arrange
+    record = notes.add("чай", expires_at=PAST if hide == "expire" else None)
+    if hide == "archive":
+        notes.archive(record.id)
+
+    # Act
+    notes.update(record.id, content="кава")
+    notes.restore(record.id)
+    notes.update(record.id, expires_at=None)
+
+    # Assert
+    assert found(notes, "кава") == ["кава"]
+
+
+@pytest.mark.parametrize("hide", ["archive", "expire"])
+def test_putting_the_same_text_into_a_hidden_record_never_calls_the_model(
+    notes: Collection, model: FakeModel, hide: str
+) -> None:
+    # Arrange
+    record = notes.put("drink", "кава", expires_at=PAST if hide == "expire" else None)
+    if hide == "archive":
+        notes.archive(record.id)
+    calls = len(model.calls)
+
+    # Act
+    notes.put("drink", "кава")
+
+    # Assert
+    assert len(model.calls) == calls
+    assert found(notes, "кава") == ["кава"]
+
+
+def test_archive_restore_and_expiry_keep_the_vector_without_calling_the_model(
+    notes: Collection, model: FakeModel
+) -> None:
+    # Arrange
+    record = notes.add("кава")
+    calls = len(model.calls)
+
+    # Act
+    notes.archive(record.id)
+    notes.restore(record.id)
+    notes.update(record.id, expires_at=PAST)
+    notes.update(record.id, expires_at=None)
+
+    # Assert
+    assert len(model.calls) == calls
+    assert found(notes, "кава") == ["кава"]
+
+
+def test_embed_missing_gives_hidden_records_their_vectors_too(
+    store: Store, plain: Collection
+) -> None:
+    # Arrange
+    plain.archive(plain.add("кава").id)
+    plain.add("чай", expires_at=PAST)
+    engine = engine_on(store, Embedder(MODEL, FakeModel()))
+
+    # Act
+    written = engine.embed_missing()
+
+    # Assert
+    notes = engine.collection("user:123")
+    assert written == 2
+    assert found(notes, "кава", include_archived=True, include_expired=True) == ["кава", "чай"]

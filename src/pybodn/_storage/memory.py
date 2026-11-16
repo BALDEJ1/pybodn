@@ -5,8 +5,9 @@ import copy
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 
-from pybodn._filter import EVERYTHING, Filter
+from pybodn._filter import EVERYTHING, Filter, is_expired
 from pybodn._models import MemoryRecord, SearchHit
 from pybodn._search import Term, bm25_scores
 from pybodn._storage.base import (
@@ -86,17 +87,21 @@ class InMemoryStore:
     def delete(self, namespace: str, id: str) -> bool:
         with self._lock:
             ensure_open(self)
-            space = self._namespaces.get(namespace)
-            if space is None or id not in space.records:
-                return False
-            record = space.records.pop(id)
-            if record.key is not None:
-                del space.ids_by_key[record.key]
-            del space.seqs[id]
-            space.vectors.pop(id, None)
-            if not space.records:
-                del self._namespaces[namespace]
-            return True
+            return self._remove(namespace, id)
+
+    def purge_expired(self, now: datetime, *, limit: int) -> int:
+        with self._lock:
+            ensure_open(self)
+            # Looks through every record for each batch: this store is for tests and small data.
+            expired = [
+                (namespace, record.id)
+                for namespace, space in self._namespaces.items()
+                for record in space.records.values()
+                if is_expired(record, now)
+            ][:limit]
+            for namespace, record_id in expired:
+                self._remove(namespace, record_id)
+            return len(expired)
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
@@ -198,6 +203,20 @@ class InMemoryStore:
         if where == EVERYTHING:  # no filter to run each record through
             return [*records]
         return [record for record in records if where.matches(record)]
+
+    def _remove(self, namespace: str, id: str) -> bool:
+        """Remove the record and its vector. ``False`` if there was none."""
+        space = self._namespaces.get(namespace)
+        if space is None or id not in space.records:
+            return False
+        record = space.records.pop(id)
+        if record.key is not None:
+            del space.ids_by_key[record.key]
+        del space.seqs[id]
+        space.vectors.pop(id, None)
+        if not space.records:
+            del self._namespaces[namespace]
+        return True
 
     def _find(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         space = self._namespaces.get(namespace)

@@ -14,7 +14,7 @@ from pybodn import MemoryEngine
 from pybodn._storage import schema, sqlite
 from pybodn._words import WORD_RULES
 from pybodn.errors import StorageError
-from tests.sqlite.support import THREADS, WAIT_SECONDS, run_sql
+from tests.sqlite.support import THREADS, WAIT_SECONDS, make_old_file, run_sql
 
 
 def make_pybodn_file(path: Path) -> None:
@@ -71,18 +71,27 @@ def test_each_version_keeps_its_layout(path: Path) -> None:
         ("created_at", "TEXT", 1, 0),
         ("updated_at", "TEXT", 1, 0),
         ("version", "INTEGER", 1, 0),
+        ("expires_at", "TEXT", 0, 0),
+        ("archived_at", "TEXT", 0, 0),
     ]
     indexes = run_sql(
         path, "SELECT name, sql FROM sqlite_master WHERE type = 'index' ORDER BY name"
     )
     assert indexes == [
         (
+            "ix_memories_expires",
+            "CREATE INDEX ix_memories_expires ON memories (expires_at)"
+            " WHERE expires_at IS NOT NULL",
+        ),
+        (
             "ix_memories_namespace_created",
-            "CREATE INDEX ix_memories_namespace_created ON memories (namespace, created_at)",
+            "CREATE INDEX ix_memories_namespace_created"
+            " ON memories (namespace, created_at, archived_at, expires_at)",
         ),
         (
             "ix_memories_namespace_seq",
-            "CREATE INDEX ix_memories_namespace_seq ON memories (namespace, seq)",
+            "CREATE INDEX ix_memories_namespace_seq"
+            " ON memories (namespace, seq, archived_at, expires_at)",
         ),
         (
             "ix_memory_vectors_model",
@@ -134,6 +143,48 @@ def test_an_older_file_is_brought_up_to_date(path: Path, monkeypatch: pytest.Mon
     assert stored == record
     assert run_sql(path, "PRAGMA user_version") == [(len(schema.MIGRATIONS),)]
     assert run_sql(path, "SELECT name FROM sqlite_master WHERE name = 'extra'") == [("extra",)]
+
+
+def fill_0_2_0(engine: MemoryEngine) -> None:
+    notes = engine.collection("user:123")
+    notes.add("Prefers Python", tags=["lang"])
+    notes.put("drink", "Кава без цукру")
+
+
+def test_a_file_from_pybodn_0_2_0_keeps_its_records_and_word_index(path: Path) -> None:
+    # Arrange
+    make_old_file(path, 2, fill_0_2_0)
+    rows = run_sql(path, "SELECT * FROM memories ORDER BY seq")
+    index = run_sql(path, "SELECT rowid, * FROM memory_words ORDER BY rowid")
+
+    # Act
+    with MemoryEngine.sqlite(path) as engine:
+        records = engine.collection("user:123").list()
+
+    # Assert
+    assert [record.content for record in records] == ["Prefers Python", "Кава без цукру"]
+    assert {(record.expires_at, record.archived_at) for record in records} == {(None, None)}
+    assert run_sql(path, "SELECT * FROM memories ORDER BY seq") == [
+        (*row, None, None) for row in rows
+    ]
+    assert run_sql(path, "SELECT rowid, * FROM memory_words ORDER BY rowid") == index
+    assert_is_pybodn_file(path)
+
+
+@pytest.mark.parametrize("version", range(1, len(schema.MIGRATIONS)))
+def test_a_file_of_any_older_version_gains_the_layout_of_a_new_one(
+    path: Path, tmp_path: Path, version: int
+) -> None:
+    # Arrange
+    make_old_file(path, version, fill_0_2_0)
+    new_file = tmp_path / "new.db"
+    make_pybodn_file(new_file)
+
+    # Act
+    MemoryEngine.sqlite(path).close()
+
+    # Assert
+    assert schema_objects(path) == schema_objects(new_file)
 
 
 def test_a_failed_migration_changes_nothing(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

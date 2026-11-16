@@ -2,7 +2,7 @@
 
 Run it from the repository root, with NumPy installed, as ``uv sync`` installs it:
 
-    uv run python benchmarks/bench.py
+    uv run python -m benchmarks.bench
 
 It takes a few minutes and writes up to 2 GB of files to a temporary folder, removed at the end.
 Records are 5 to 25 words drawn from 50,000 made-up words, the n-th most common used 1/n as often
@@ -17,7 +17,6 @@ import tempfile
 import time
 import tracemalloc
 from collections.abc import Callable, Iterator
-from contextlib import closing
 from itertools import accumulate, batched
 from pathlib import Path
 from typing import NamedTuple
@@ -25,6 +24,7 @@ from typing import NamedTuple
 import numpy as np
 
 from pybodn import Collection, Embedder, MemoryEngine, NewMemory, __version__
+from tests.sqlite.support import make_old_file
 
 RECORDS = (10_000, 100_000)
 DIMENSIONS = (384, 1_536, 3_072)
@@ -152,15 +152,7 @@ def many_namespaces(folder: Path, corpus: Corpus) -> tuple[float, float]:
 def first_open(folder: Path, corpus: Corpus) -> float:
     """The first open of a file that pybodn 0.1.0 wrote, which indexes every record."""
     path = folder / "0.1.0.db"
-    with MemoryEngine.sqlite(path) as engine:
-        fill(engine.collection("user:1"), corpus.texts(UPGRADED))
-    # Now as pybodn 0.1.0 leaves a file: the records, and nothing that schema version 2 adds, as
-    # make_0_1_0_file in tests/sqlite/test_sqlite_words.py makes it too.
-    with closing(sqlite3.connect(path, autocommit=True)) as connection:
-        connection.executescript(
-            "DROP TABLE memory_words; DROP TABLE settings; DROP TABLE memory_vectors;"
-            " DROP INDEX ix_memories_namespace_created; PRAGMA user_version = 1;"
-        )
+    make_old_file(path, 1, lambda engine: fill(engine.collection("user:1"), corpus.texts(UPGRADED)))
     started = time.perf_counter()
     engine = MemoryEngine.sqlite(path)
     opened = time.perf_counter() - started

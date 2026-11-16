@@ -12,6 +12,7 @@ Any call after ``close()`` raises ``EngineClosedError``.
 import builtins
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
 from typing import Literal, Protocol
@@ -96,6 +97,11 @@ class Store(Protocol):
 
     def delete(self, namespace: str, id: str) -> bool:
         """Remove the record and its vector. ``False`` if there was none."""
+
+    def purge_expired(self, now: datetime, *, limit: int) -> int:
+        """Remove at most ``limit`` records, across namespaces, that have expired at ``now``, as
+        ``pybodn._filter.is_expired`` tells, with their vectors, all at once. Returns how many.
+        """
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
@@ -206,7 +212,8 @@ def reject_stored_keys(
     for record in records:
         if record.key is not None and is_stored(record.namespace, record.key):
             raise DuplicateKeyError(
-                f"key {record.key!r} is already used in namespace {record.namespace!r}"
+                f"key {record.key!r} is already used in namespace {record.namespace!r};"
+                " an archived or expired record may hold it: put() replaces it"
             )
 
 

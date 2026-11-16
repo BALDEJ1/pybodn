@@ -45,6 +45,8 @@ _COLUMNS = (
     "created_at",
     "updated_at",
     "version",
+    "expires_at",
+    "archived_at",
 )
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM memories WHERE namespace = ?"  # noqa: S608
 _SELECT_BY: dict[Lookup, str] = {
@@ -85,6 +87,9 @@ _FIELD_IS_NUMBER = (
 _MIN_IMPORTANCE = " AND importance >= ?"
 _CREATED_SINCE = " AND created_at >= ?"
 _CREATED_BEFORE = " AND created_at < ?"
+_NOT_ARCHIVED = " AND archived_at IS NULL"
+_EXPIRED = "expires_at <= ?"  # as pybodn._filter.is_expired: NULL never expires
+_NOT_EXPIRED = f" AND (expires_at IS NULL OR NOT ({_EXPIRED}))"
 
 # The word index holds each record's words and its namespace's token under its seq. The
 # pybodn_ functions are Python functions this connection lends SQLite for these statements;
@@ -153,6 +158,15 @@ _RECORDS_AT = (
     " WHERE seq IN (SELECT value FROM json_each(?))"
 )
 
+# A purge: the seqs of the records that have expired, through the expiry index, then their words,
+# vectors and rows, each found by a seq of that list.
+_EXPIRED_SEQS = f"SELECT seq FROM memories WHERE {_EXPIRED} LIMIT ?"  # noqa: S608
+_PURGE = (
+    "DELETE FROM memory_words WHERE rowid IN (SELECT value FROM json_each(?))",
+    "DELETE FROM memory_vectors WHERE seq IN (SELECT value FROM json_each(?))",
+    "DELETE FROM memories WHERE seq IN (SELECT value FROM json_each(?))",
+)
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -204,7 +218,7 @@ class SQLiteStore:
     def get(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         with self._lock:
             ensure_open(self)
-            with _storage_errors():
+            with self._up_to_date(_BEGIN_READ):
                 return self._find(namespace, by, value)
 
     def insert(
@@ -252,6 +266,17 @@ class SQLiteStore:
                 deleted = self._connection.execute(_DELETE, (namespace, id)).rowcount
         return deleted > 0
 
+    def purge_expired(self, now: datetime, *, limit: int) -> int:
+        with self._lock:
+            ensure_open(self)
+            with self._up_to_date(_BEGIN_WRITE):
+                rows = self._connection.execute(_EXPIRED_SEQS, (_write_time(now), limit))
+                seqs = [seq for (seq,) in rows]
+                given = json.dumps(seqs)
+                for statement in _PURGE:
+                    self._connection.execute(statement, (given,))
+        return len(seqs)
+
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
@@ -260,15 +285,15 @@ class SQLiteStore:
         page = (namespace, *values, _NO_LIMIT if limit is None else limit, offset)
         with self._lock:
             ensure_open(self)
-            with _storage_errors():
+            with self._up_to_date(_BEGIN_READ):
                 rows = self._connection.execute(sql, page).fetchall()
-                return [_record(row) for row in rows]
+            return [_record(row) for row in rows]
 
     def count(self, namespace: str, *, where: Filter) -> int:
         conditions, values = _conditions(where)
         with self._lock:
             ensure_open(self)
-            with _storage_errors():
+            with self._up_to_date(_BEGIN_READ):
                 count: int = _single(self._connection, _COUNT + conditions, (namespace, *values))
         return count
 
@@ -305,7 +330,7 @@ class SQLiteStore:
     def last_seq(self) -> int:
         with self._lock:
             ensure_open(self)
-            with _storage_errors():
+            with self._up_to_date(_BEGIN_READ):
                 last: int = _single(self._connection, _LAST_SEQ)
         return last
 
@@ -342,14 +367,14 @@ class SQLiteStore:
         """A transaction on a file still at the versions this process opened.
 
         A newer pybodn may have upgraded the file since. This process would then write the old
-        way, leaving the file partly up to date, or search an index built under other rules, so
-        it stops instead.
+        way, leaving the file partly up to date, search an index built under other rules, or
+        show records the newer one hides, so it stops instead.
         """
         with _storage_errors(), _transaction(self._connection, begin):
             if _file_versions(self._connection) != self._versions:
                 raise StorageError(
                     "a newer pybodn has upgraded the file since this process opened it:"
-                    " restart the process to write to it or search it"
+                    " restart the process to use it"
                 )
             yield
 
@@ -531,6 +556,11 @@ def _conditions(where: Filter) -> tuple[str, tuple[object, ...]]:
     if where.created_before is not None:
         sql.append(_CREATED_BEFORE)
         values.append(_write_time(where.created_before))
+    if where.hide_archived:
+        sql.append(_NOT_ARCHIVED)
+    if where.hide_expired_at is not None:
+        sql.append(_NOT_EXPIRED)
+        values.append(_write_time(where.hide_expired_at))
     return "".join(sql), tuple(values)
 
 
@@ -559,6 +589,8 @@ def _row(record: MemoryRecord) -> dict[str, object]:
         "created_at": _write_time(record.created_at),
         "updated_at": _write_time(record.updated_at),
         "version": record.version,
+        "expires_at": _write_time_or_none(record.expires_at),
+        "archived_at": _write_time_or_none(record.archived_at),
     }
 
 
@@ -577,6 +609,8 @@ def _record(row: sqlite3.Row) -> MemoryRecord:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             version=row["version"],
+            expires_at=_read_time_or_none(row["expires_at"]),
+            archived_at=_read_time_or_none(row["archived_at"]),
         )
     except (TypeError, ValueError, RecursionError) as error:
         raise StorageError(f"record {row['id']!r} in the database is damaged: {error}") from error
@@ -601,3 +635,13 @@ def _json(value: object) -> str:
 def _write_time(moment: datetime) -> str:
     """UTC as text of one width, microseconds always written, so text order is time order."""
     return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _write_time_or_none(moment: datetime | None) -> str | None:
+    """``moment`` as ``_write_time`` writes it, or ``None`` for never."""
+    return None if moment is None else _write_time(moment)
+
+
+def _read_time_or_none(text: str | None) -> datetime | None:
+    """A time ``_write_time_or_none`` wrote, or ``None`` for never."""
+    return None if text is None else datetime.fromisoformat(text)
