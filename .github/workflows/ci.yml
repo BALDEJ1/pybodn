@@ -123,3 +123,9 @@ jobs:
         run: >-
           uv run --isolated --no-project --with dist/*.whl --with pytest==9.2.0
           pytest -p no:cacheprovider tests/test_readme.py
+      # Without NumPy, the examples of search by meaning are skipped; with the wheel's "vector"
+      # extra, which brings NumPy, every example runs.
+      - name: Run the README examples again with the wheel's vector extra
+        run: >-
+          uv run --isolated --no-project --with "$(echo dist/*.whl)[vector]" --with pytest==9.2.0
+          pytest -p no:cacheprovider tests/test_readme.py

@@ -4,14 +4,16 @@ build-backend = "uv_build"
 
 [project]
 name = "pybodn"
-version = "0.1.0"
+version = "0.2.0"
 description = "A foundational memory engine for intelligent systems."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "BALDEJ1" }]
-keywords = ["memory", "agent-memory", "ai-memory", "index", "retrieval"]
+keywords = [
+  "memory", "agent-memory", "ai-memory", "retrieval", "search", "semantic-search", "sqlite"
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -49,7 +51,7 @@ select = ["E", "F", "I", "B", "UP", "S"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "benchmarks"]
 
 [tool.pytest]
 minversion = "9.0"

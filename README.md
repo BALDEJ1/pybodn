@@ -1,17 +1,23 @@
 # PyBodn
 
 PyBodn stores memories for Python applications and AI agents: texts with a namespace, an optional
-key, JSON metadata, tags and an importance score. It keeps them in memory or in an SQLite file
-that several threads and processes can share. It needs nothing outside the Python standard
-library and does not tie you to an LLM, an embedding provider or a database server.
+key, JSON metadata, tags and an importance score. It finds them again by words and, with an
+embedding model of your own, by meaning. It keeps them in memory or in an SQLite file that
+several threads and processes can share. Its core needs nothing outside the Python standard
+library, and it does not tie you to an LLM, an embedding provider or a database server.
 
-> **Status: alpha.** The API may still change between 0.x releases. There is no search yet: you
-> read a record by its id or its key, or list a namespace in the order its records were added.
+> **Status: alpha.** The API may still change between 0.x releases.
 
 ## Install
 
 ```bash
 pip install pybodn
+```
+
+Search by meaning also needs NumPy. To install it with pybodn:
+
+```bash
+pip install "pybodn[vector]"
 ```
 
 Requires Python 3.12 or newer.
@@ -26,13 +32,12 @@ with MemoryEngine.sqlite("memory.db") as engine:
     notes.add("Prefers short answers", tags=["style"])
     notes.put("language", "Python")  # creates the record with this key, or replaces it
 
-    for record in notes.list():
-        print(record.content)
-# Prefers short answers
-# Python
+    print([record.content for record in notes.list()])  # ['Prefers short answers', 'Python']
+    print(notes.search("answer")[0].record.content)  # Prefers short answers
 ```
 
-The records stay in `memory.db` after the program ends. Every example below runs on its own in an empty folder.
+The records stay in `memory.db` after the program ends. Every example below runs on its own in
+an empty folder.
 
 ## Engines
 
@@ -42,18 +47,18 @@ the end, or call `close()` yourself. Closing twice is safe; any other call after
 
 | Factory | Keeps records | Shared by |
 |---|---|---|
-| `MemoryEngine.in_memory()` | in this process, until `close()` | the threads of one process |
-| `MemoryEngine.sqlite(path, *, timeout=5.0)` | in the SQLite file at `path`, created if missing | threads and processes |
+| `MemoryEngine.in_memory(*, embedder=None)` | in this process, until `close()` | the threads of one process |
+| `MemoryEngine.sqlite(path, *, timeout=5.0, embedder=None)` | in the SQLite file at `path`, created if missing | threads and processes |
 
-Use `in_memory()` for tests and for data you do not need to keep.
+Use `in_memory()` for tests and for data you do not need to keep. It searches by reading every
+record, so keep it small. `embedder` is the embedding model that search by meaning uses.
 
 `path` is a string or a `pathlib.Path`, and its folder must exist, or `StorageError` is raised.
-`":memory:"` as the path
-keeps an SQLite database in memory, gone when the engine closes.
+`":memory:"` as the path keeps an SQLite database in memory, gone when the engine closes.
 
 While another process writes to the file, a write waits up to `timeout` seconds, then raises
-`StorageError`. With `timeout=0` it does not wait at all. A read never waits for another
-process.
+`StorageError`, and so does opening the file. With `timeout=0` they do not wait at all. A read
+never waits for another process.
 
 ## Collections
 
@@ -161,6 +166,36 @@ with MemoryEngine.in_memory() as engine:
     print(notes.count())  # 6
 ```
 
+### Filters
+
+`list`, `count` and `search` take filters by name. A record is kept only if it passes every
+filter given, and a filter set to `None` sets no condition. `limit` and `offset` page through
+the records kept.
+
+| Filter | Keeps a record that |
+|---|---|
+| `tags` | has every one of these tags |
+| `metadata` | has each of these top-level fields, equal to its value as JSON: `True` is not `1`, and `None` is a field set to `None` |
+| `min_importance` | has at least this importance |
+| `created_since` | was created at this moment or after it, a `datetime` with a time zone |
+| `created_before` | was created before this moment, a `datetime` with a time zone |
+
+```python
+from datetime import UTC, datetime, timedelta
+
+from pybodn import MemoryEngine
+
+with MemoryEngine.in_memory() as engine:
+    notes = engine.collection("user:123")
+    notes.add("Allergic to peanuts", tags=["health"], importance=0.9)
+    notes.add("Plays the guitar", metadata={"topic": "music"})
+
+    print(notes.count(tags=["health"]))  # 1
+    print(notes.list(metadata={"topic": "music"})[0].content)  # Plays the guitar
+    print(notes.count(min_importance=0.8))  # 1
+    print(notes.count(created_since=datetime.now(UTC) - timedelta(hours=1)))  # 2
+```
+
 ### Replace by key: `put`
 
 `put(key, content, *, metadata={}, tags=(), importance=0.5, source=None)` creates the record
@@ -223,6 +258,173 @@ with MemoryEngine.in_memory() as engine:
     notes.add("Prefers Rust", key="language")  # the key is free again
 ```
 
+## Search
+
+`search(query, *, limit=10, mode="auto", **filters)` returns the records that best match
+`query`, best first: at most `limit` of them, as `SearchHit` objects that hold the `record` and
+its `score`. A higher score is a better match, and scores compare only within one search. The
+filters are those of `list`. A query without words, such as "?!", finds nothing.
+
+| `mode` | Searches |
+|---|---|
+| `"auto"`, the default | by words, and with an embedding model by meaning too, mixing the two |
+| `"text"` | by words |
+| `"vector"` | by meaning, with the engine's embedding model |
+
+### By words
+
+A record matches if it holds any word of the query.
+
+- Case, stress marks and apostrophes do not matter: "Алергі́я" finds "алергія", and
+  "п’ять" finds "п'ять".
+- A word also finds its forms with another ending, in Ukrainian, Russian and English: "алергії"
+  finds "алергія", and "projects" finds "project". A longer word with no known ending finds the
+  words that start with it: "лікар" finds "лікаря".
+- A word of three letters or fewer, or a number, finds only itself: "про" does not find
+  "проєкт", nor "100" find "1000".
+- Forms that change inside the word, such as "рік" and "року" or "run" and "running", are not
+  found, and a short start may find another word: "this" finds "thing".
+- Accents on Latin letters count: "cafe" does not find "café".
+- Languages written without spaces between words, such as Chinese, Japanese and Thai, are not
+  split into words: a run of their letters between spaces or punctuation counts as one word.
+  Search by meaning has no such limit.
+
+Records score by BM25, as full-text search engines rank them: more of the query's words, rarer
+words and the exact forms rank a record higher. How rare a word is counts over every record in
+the file, so a word common in other namespaces counts for less, but records of other namespaces
+are never returned. Equal scores keep the order the records were added in. A query of more than
+100 different words raises `ValidationError`.
+
+```python
+from pybodn import MemoryEngine
+
+with MemoryEngine.in_memory() as engine:
+    notes = engine.collection("user:123")
+    notes.add("Алергія на арахіс", tags=["health"])
+    notes.add("Working on two projects")
+
+    print(notes.search("алергії")[0].record.content)  # Алергія на арахіс
+    print(notes.search("project")[0].record.content)  # Working on two projects
+    print(notes.search("арахіс", tags=["work"]))  # []
+```
+
+### By meaning
+
+Search by meaning finds the records closest in meaning to the query, even with no word in
+common. It needs NumPy, `pip install "pybodn[vector]"`, and an embedding model of your own,
+which turns texts into vectors of numbers. Give the model to the engine as an `Embedder`:
+
+`Embedder(name, embed, *, batch_size=100)`
+
+- `embed` gets a list of at most `batch_size` texts and returns a vector for each, in the same
+  order: a list, tuple or array of numbers, as long for every text.
+- `name` names the model and its version. Every vector is stored with it, and a search compares
+  only the vectors of the engine's model, so give a model that makes other vectors, even a new
+  version of the same model, another name.
+
+Every write of a new text asks the model for its vector before it takes any lock, and writes
+nothing if the model fails; the model's error passes through as it raised it. A write that
+keeps the text, such as an `update` of the tags, never calls the model.
+
+`search(query, mode="vector")` returns the `limit` records whose vectors are closest to the
+query's, however far, each scored by its similarity to the query, from -1 to 1. A record
+without a vector of the engine's model is not found until `embed_missing()`, below, gives it
+one.
+
+```python
+# pip install "pybodn[vector]"
+from pybodn import Embedder, MemoryEngine
+
+TOPICS = [{"coffee", "espresso", "latte"}, {"peanut", "peanuts", "allergic"}]
+
+
+def embed(texts: list[str]) -> list[list[float]]:
+    """A toy model for this example: 1, then how many words of each topic a text holds."""
+    return [[1, *(len(set(text.lower().split()) & topic) for topic in TOPICS)] for text in texts]
+
+
+with MemoryEngine.in_memory(embedder=Embedder("toy-1", embed)) as engine:
+    notes = engine.collection("user:123")
+    notes.add("Drinks an espresso every morning")
+    notes.add("Allergic to peanuts")
+
+    for hit in notes.search("coffee", mode="vector"):  # no record holds the word
+        print(hit.record.content, round(hit.score, 2))
+    # Drinks an espresso every morning 1.0
+    # Allergic to peanuts 0.32
+
+    for hit in notes.search("morning coffee"):  # by words and by meaning, mixed
+        print(hit.record.content, round(hit.score, 3))
+    # Drinks an espresso every morning 0.033
+    # Allergic to peanuts 0.016
+```
+
+With a real model, `embed` calls it. A local model from sentence-transformers, for example:
+
+```py
+from sentence_transformers import SentenceTransformer
+
+from pybodn import Embedder, MemoryEngine
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+engine = MemoryEngine.sqlite("memory.db", embedder=Embedder("all-MiniLM-L6-v2", model.encode))
+```
+
+A hosted model works the same way: call its API in `embed`, and set `batch_size` to the number
+of texts it takes in one request.
+
+`engine.embed_missing()` gives a vector of the engine's model to every record that has none, in
+every namespace, and returns how many got one. Call it once you give a file its first model, or
+a new one: the records an engine without the model wrote have no vector, and the vectors of
+another model are replaced. The records go to the model `batch_size` at a time, and each batch
+is written as soon as the model answers: if the model fails, the batches before stay written,
+and the next call goes on with the rest.
+
+### Mixed: the default with a model
+
+With an embedding model, the default `mode="auto"` searches by words and by meaning, each on its
+own, and mixes the two by reciprocal rank fusion: each search gives its best 50 records, or
+`limit` if more, and a record scores `1 / (60 + place)` for each search that found it, added
+up, so that a record found both ways rises. Scores are small, such as 0.03, and equal scores
+keep the order of the search by words.
+
+There is no threshold: with a model, a search returns up to `limit` records even when none is
+close, as search by meaning always finds the closest. To keep only close ones, search with
+`mode="vector"` and check the scores. If the model fails, the search raises its error: to
+search by words anyway, catch it and search again with `mode="text"`.
+
+## Speed and size
+
+Measured on an Apple M4 with Python 3.13 and SQLite 3.53 by
+[`benchmarks/bench.py`](https://github.com/BALDEJ1/pybodn/blob/main/benchmarks/bench.py), which
+you can run on your own machine. The records are 5 to 25 words long, with words as frequent as
+in real text, all in one namespace. Each search returns the best 10, and each time is the
+fastest of five runs.
+
+| Search | 10,000 records | 100,000 records |
+|---|---|---|
+| By words: a word that one record holds | 0.2 ms | 1.3 ms |
+| By words: the five most common words | 8.3 ms | 84 ms |
+| By meaning: vectors of 384 numbers | 12 ms | 122 ms |
+| By meaning: vectors of 1,536 numbers | 32 ms | 315 ms |
+| By meaning: vectors of 3,072 numbers | 54 ms | 571 ms |
+| Mixed: 1,536 numbers and the five most common words | 41 ms | 412 ms |
+
+- Search by words reads only the records that hold a word of the query, so a rare word is found
+  at once and a common one takes longer.
+- Search by meaning compares the query with every vector in the namespace, so its time grows
+  with the number of records and the length of the vectors. It reads the vectors in batches, so
+  its memory stays the same however many records there are: 26 MB with 1,536 numbers.
+- Mixed search runs both and takes about as long as the two together. The time your model takes
+  to turn the query into a vector comes on top.
+- A search holds its engine's lock while it runs, so the engine's other calls wait for it; other
+  engines and processes do not.
+- A vector takes 4 bytes per number, so vectors make most of a file: 100,000 records with vectors
+  of 1,536 numbers take 902 MB.
+- The word index is one for the whole file, so a common word takes longer the more records the
+  file holds: in a file of 1,000,000 records in 1,000 namespaces, a search in one namespace
+  takes 0.1 ms for a word that one record holds, and 122 ms for the five most common words.
+
 ## Threads and processes
 
 Any number of threads can share one engine. Processes share an SQLite file, each with an engine
@@ -263,10 +465,13 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `DuplicateKeyError` | `add` or `add_many` uses a key the namespace already has, or one batch repeats a key |
 | `RecordNotFoundError` | `update` gets an id with no record. Also a `LookupError`. |
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
-| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, or another program damaged a record in it. The original error is its `__cause__`. |
+| `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
+| `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, or another program damaged a record in it. The original error is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
-An unknown keyword argument raises `TypeError`, as it does for any Python function.
+An unknown keyword argument raises `TypeError`, as it does for any Python function. An error
+the embedding model raises passes through unchanged.
 
 ## What is checked
 
@@ -286,6 +491,12 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
 - A record keeps a copy of the `metadata` you pass: changing your dict later changes nothing.
 - `limit` and `expected_version` are `None` or an integer from 1, and `offset` is an integer
   from 0. None of them can exceed 2**63 - 1, the largest integer SQLite stores.
+- A search's `query` is a string, of at most 100 different words when it searches by words. Its
+  `limit` is an integer from 1, never `None`, and its `mode` is `"auto"`, `"text"` or `"vector"`.
+- The filters hold at most 100 tags and 100 metadata fields, and the metadata fields are
+  matched against `str`, `int`, `float`, `bool` or `None`, never a list or a dict.
+- An `Embedder` given to an engine has a non-empty name, a callable `embed` and a `batch_size`
+  from 1.
 - `path` is a non-empty string or path object without NUL characters, and `timeout` is a number
   of seconds from 0 to 2,147,483 (almost 25 days).
 
@@ -297,9 +508,17 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
 - A change is in the file before the call returns, so a crash of your program does not lose it.
 - Every process using the file must run on the same computer. The file's write-ahead log does
   not work on a network drive ([SQLite docs](https://sqlite.org/wal.html)).
+- Besides the records, the file keeps the words of every record, for search by words, and the
+  vector of each record that has one.
+- Opening a file needs SQLite with full-text search (FTS5) and JSON, as Python's own builds and
+  the common Linux distributions have; the oldest tested is SQLite 3.34. Without them,
+  `StorageError` says what is missing and the file stays as it was.
 - The file is marked as pybodn's and carries a schema version. Opening a file made by an older
-  pybodn brings it up to date. A file that is not pybodn's, such as another program's SQLite
-  database, or one made by a newer pybodn, raises `StorageError` and stays exactly as it was.
+  pybodn brings it up to date, as Upgrading from 0.1.0 describes. A file that is not pybodn's,
+  such as another program's SQLite database, or one made by a newer pybodn, raises
+  `StorageError` and stays exactly as it was.
+- A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
+  next write or search, asking to be restarted, instead of writing or searching the old way.
 
 To copy the file, close every engine that uses it, or use SQLite's backup, which is safe while
 engines are writing:
@@ -323,12 +542,31 @@ with MemoryEngine.sqlite("backup.db") as copy:
     print(copy.collection("user:123").count())  # 1
 ```
 
+## Upgrading from 0.1.0
+
+pybodn 0.2.0 brings a file from 0.1.0 up to date the first time it opens it.
+
+1. Stop every process that uses the file. A process still running 0.1.0 would add records that
+   search never finds.
+2. Upgrade pybodn and start the processes again. The first to open the file indexes the words of
+   every record while it holds the file's write lock: 1.2 s per 100,000 records on the machine
+   of Speed and size. The others wait for it up to their `timeout`, then raise `StorageError`,
+   so open a large file once on its own first.
+3. With an embedding model, call `engine.embed_missing()` once, so that search by meaning finds
+   the records written before.
+
 ## Not in this release
 
-- Search and filters by text, metadata or tags.
-- Expiry, archiving and clean-up of old records.
+- Approximate vector indexes, such as FAISS, and external vector databases: search by meaning
+  reads every vector in the namespace.
+- "Or" and "not" in filters, filters on nested metadata fields and on the time of the last
+  change, and an upper bound on importance.
+- Phrase search and highlighting of matches.
+- Ranking by importance or recency: the order depends only on how well a record matches.
+- Treating "café" as "cafe", and splitting languages written without spaces into words.
+- Several embedding models in one file at once.
+- Expiry, archiving and clean-up of old records, and an async API.
 - Storage backends of your own: the storage interface is private for now.
-- An async API.
 
 ## HashIndex
 
@@ -362,6 +600,7 @@ uv run ruff format --check
 uv run mypy
 uv run coverage run -m pytest
 uv run coverage report
+uv run python benchmarks/bench.py    # the figures under Speed and size, on this machine
 ```
 
 ## License
