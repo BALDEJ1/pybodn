@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import pytest
 
@@ -20,6 +21,8 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "get_by_key": lambda notes: notes.get_by_key("language"),
     "update": lambda notes: notes.update(MISSING_ID, content="Prefers Rust"),
     "delete": lambda notes: notes.delete(MISSING_ID),
+    "archive": lambda notes: notes.archive(MISSING_ID),
+    "restore": lambda notes: notes.restore(MISSING_ID),
     "list": lambda notes: notes.list(),
     "count": lambda notes: notes.count(),
     "search": lambda notes: notes.search("Python"),
@@ -33,6 +36,8 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "update-without-fields": lambda notes: notes.update(MISSING_ID),
     "update-with-unknown-field": lambda notes: notes.update(MISSING_ID, key="k"),  # type: ignore[call-arg]
     "delete-with-bad-id": lambda notes: notes.delete(""),
+    "archive-with-bad-id": lambda notes: notes.archive(""),
+    "get-with-bad-option": lambda notes: notes.get(MISSING_ID, include_archived=1),  # type: ignore[arg-type]
     "list-with-bad-limit": lambda notes: notes.list(limit=0),
     "list-with-bad-filter": lambda notes: notes.list(min_importance=2),
     "count-with-bad-filter": lambda notes: notes.count(tags="health"),
@@ -66,6 +71,7 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "insert": lambda store: store.insert([]),
     "modify": lambda store: store.modify("user:123", "id", MISSING_ID, never_build),
     "delete": lambda store: store.delete("user:123", MISSING_ID),
+    "purge_expired": lambda store: store.purge_expired(datetime.now(UTC), limit=10),
     "list": lambda store: store.list("user:123", where=EVERYTHING, limit=None, offset=0),
     "count": lambda store: store.count("user:123", where=EVERYTHING),
     "search_words": lambda store: store.search_words(
@@ -111,6 +117,12 @@ def test_embed_missing_after_close_raises_engine_closed_error(engine: MemoryEngi
     engine.close()
     with pytest.raises(EngineClosedError):
         engine.embed_missing()
+
+
+def test_purge_expired_after_close_raises_engine_closed_error(engine: MemoryEngine) -> None:
+    engine.close()
+    with pytest.raises(EngineClosedError):
+        engine.purge_expired()
 
 
 def test_close_can_be_called_again(engine: MemoryEngine) -> None:

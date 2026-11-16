@@ -137,6 +137,18 @@ def moment(name: str, value: object) -> datetime:
     ) from cause
 
 
+def expiry(value: object) -> datetime | None:
+    """Never, or a ``datetime`` with a time zone, as the same moment in UTC."""
+    return None if value is None else moment("expires_at", value)
+
+
+def flag(name: str, value: object) -> bool:
+    """``True`` or ``False``, and nothing that only counts as one, such as ``1``."""
+    if isinstance(value, bool):
+        return value
+    raise ValidationError(f"{name} must be True or False, not {value!r:.40}")
+
+
 def reject_unknown(method: str, given: Mapping[str, object], known: frozenset[str]) -> None:
     """Raise the ``TypeError`` Python raises for a keyword a function does not take."""
     unknown = sorted(given.keys() - known)

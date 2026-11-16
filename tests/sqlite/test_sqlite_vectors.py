@@ -6,6 +6,7 @@ import hashlib
 import random
 import struct
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from pybodn._storage import schema, sqlite
 from pybodn._words import WORD_RULES
 from pybodn.errors import StorageError
 from tests.fake_model import FakeModel
-from tests.sqlite.support import run_sql
+from tests.sqlite.support import make_old_file, run_sql
 
 np = pytest.importorskip("numpy")
 
@@ -87,6 +88,37 @@ def test_a_vector_left_by_pybodn_0_1_0_never_reaches_the_next_record_of_its_seq(
         assert engine.embed_missing() == 1
         assert found(notes, "кава") == ["чай"]
         assert run_sql(path, "SELECT record_id FROM memory_vectors") == [(new.id,)]
+
+
+def test_a_purge_deletes_the_vectors_of_the_records_it_deletes(path: Path) -> None:
+    with MemoryEngine.sqlite(path, embedder=MODEL) as engine:
+        # Arrange
+        notes = engine.collection("user:123")
+        notes.add("кава", expires_at=datetime(2000, 1, 1, tzinfo=UTC))
+        kept = notes.add("чай")
+
+        # Act
+        engine.purge_expired()
+
+    # Assert
+    assert run_sql(path, "SELECT seq, record_id FROM memory_vectors") == run_sql(
+        path, "SELECT seq, id FROM memories WHERE id = ?", (kept.id,)
+    )
+
+
+def test_a_file_from_pybodn_0_2_0_keeps_its_vectors(path: Path) -> None:
+    # Arrange
+    make_old_file(path, 2, lambda engine: engine.collection("user:123").add("кава"), embedder=MODEL)
+    vectors = run_sql(path, "SELECT * FROM memory_vectors")
+
+    # Act
+    with MemoryEngine.sqlite(path, embedder=MODEL) as engine:
+        hits = found(engine.collection("user:123"), "кава")
+
+    # Assert
+    assert len(vectors) == 1
+    assert run_sql(path, "SELECT * FROM memory_vectors") == vectors
+    assert hits == ["кава"]
 
 
 @pytest.mark.parametrize("damage", ["x'00'", "x'0000803f0000803f'", "'text'"])

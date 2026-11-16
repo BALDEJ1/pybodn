@@ -518,7 +518,7 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
   such as another program's SQLite database, or one made by a newer pybodn, raises
   `StorageError` and stays exactly as it was.
 - A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
-  next write or search, asking to be restarted, instead of writing or searching the old way.
+  next read or write, asking to be restarted, instead of using the file the old way.
 
 To copy the file, close every engine that uses it, or use SQLite's backup, which is safe while
 engines are writing:
@@ -600,7 +600,7 @@ uv run ruff format --check
 uv run mypy
 uv run coverage run -m pytest
 uv run coverage report
-uv run python benchmarks/bench.py    # the figures under Speed and size, on this machine
+uv run python -m benchmarks.bench    # the figures under Speed and size, on this machine
 ```
 
 ## License

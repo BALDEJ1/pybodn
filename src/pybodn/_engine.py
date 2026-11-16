@@ -14,6 +14,9 @@ from pybodn._storage.memory import InMemoryStore
 from pybodn._storage.sqlite import SQLiteStore
 from pybodn.errors import ConfigurationError
 
+# Records a purge deletes in one transaction: few enough that other writers never wait long.
+_PURGE_BATCH = 1_000
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -98,6 +101,20 @@ class MemoryEngine:
             written += self._store.write_vectors([*zip(missing, vectors, strict=True)])
             after = missing[-1].seq
         return written
+
+    def purge_expired(self) -> int:
+        """Delete every record that has expired, in every namespace, and return how many.
+
+        Expired records stay in the store, hidden, until this deletes them. They go in
+        batches, each deleted at once: if one fails, the batches before stay deleted. Every
+        batch goes by the moment the call began, so a record that expires meanwhile waits for
+        the next call.
+        """
+        now = self._clock()
+        purged = 0
+        while deleted := self._store.purge_expired(now, limit=_PURGE_BATCH):
+            purged += deleted
+        return purged
 
     def close(self) -> None:
         """Close the storage. Safe to call again."""

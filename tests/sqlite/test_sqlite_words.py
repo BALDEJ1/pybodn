@@ -5,6 +5,7 @@ searches."""
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,9 @@ from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
 from pybodn._storage import schema
 from pybodn._words import WORD_RULES, words
 from pybodn.errors import StorageError
-from tests.sqlite.support import run_sql
+from tests.sqlite.support import make_old_file, run_sql
+
+PAST = datetime(2000, 1, 1, tzinfo=UTC)
 
 
 def query(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[Any]:
@@ -82,6 +85,8 @@ WRITES: dict[str, Callable[[Collection, Collection], object]] = {
     "update-tags": lambda notes, others: notes.update(first(notes).id, tags=["health"]),
     "delete": lambda notes, others: notes.delete(first(notes).id),
     "delete-in-another-namespace": lambda notes, others: notes.delete(first(others).id),
+    "archive": lambda notes, others: notes.archive(first(notes).id),
+    "expire": lambda notes, others: notes.update(first(notes).id, expires_at=PAST),
     # SQLite gives the next record the seq of the last one deleted
     "delete-last-then-add": lambda notes, others: [
         notes.delete(last(notes).id),
@@ -100,7 +105,22 @@ def test_every_write_keeps_the_word_index_exact(
     assert_index_holds_every_record(path)
 
 
-@pytest.mark.parametrize("write", ["put-same-text", "update-tags"])
+def test_a_purge_keeps_the_word_index_exact(path: Path) -> None:
+    with MemoryEngine.sqlite(path) as engine:
+        # Arrange
+        notes, others = prepare(engine)
+        for collection in (notes, others):
+            collection.update(first(collection).id, expires_at=PAST)
+
+        # Act
+        purged = engine.purge_expired()
+
+    # Assert
+    assert purged == 2
+    assert_index_holds_every_record(path)
+
+
+@pytest.mark.parametrize("write", ["put-same-text", "update-tags", "archive", "expire"])
 def test_a_write_that_keeps_the_text_leaves_the_word_index_alone(path: Path, write: str) -> None:
     with MemoryEngine.sqlite(path) as engine:
         # Arrange
@@ -129,16 +149,7 @@ def test_words_that_pybodn_0_1_0_left_behind_do_not_block_the_next_record(path: 
 
 def make_0_1_0_file(path: Path) -> None:
     """A file as pybodn 0.1.0 leaves it: records, and nothing that schema version 2 adds."""
-    with MemoryEngine.sqlite(path) as engine:
-        prepare(engine)
-    for sql in (
-        "DROP TABLE memory_words",
-        "DROP TABLE settings",
-        "DROP TABLE memory_vectors",
-        "DROP INDEX ix_memories_namespace_created",
-        "PRAGMA user_version = 1",
-    ):
-        run_sql(path, sql)
+    make_old_file(path, 1, prepare)
 
 
 def make_file_with_older_word_rules(path: Path) -> None:
@@ -224,7 +235,47 @@ def test_a_process_overtaken_by_a_newer_pybodn_stops_before_its_next_write(
         with pytest.raises(StorageError, match="restart"):
             write(notes, others)
         assert run_sql(path, "SELECT * FROM memories ORDER BY seq") == before
-        assert len(notes.list()) == 2  # reading still works
+
+
+# Each one reads the records ``prepare`` made.
+READS: dict[str, Callable[[Collection], object]] = {
+    "get": lambda notes: notes.get("0" * 32),
+    "get_by_key": lambda notes: notes.get_by_key("drink"),
+    "list": lambda notes: notes.list(),
+    "count": lambda notes: notes.count(),
+}
+
+
+@pytest.mark.parametrize("upgrade", UPGRADES.values(), ids=UPGRADES.keys())
+@pytest.mark.parametrize("read", READS.values(), ids=READS.keys())
+def test_a_process_overtaken_by_a_newer_pybodn_stops_before_its_next_read(
+    path: Path, upgrade: tuple[str, tuple[object, ...]], read: Callable[[Collection], object]
+) -> None:
+    with MemoryEngine.sqlite(path) as engine:
+        # Arrange: a newer pybodn may hide records this process would show
+        notes, _ = prepare(engine)
+        run_sql(path, *upgrade)
+
+        # Act / Assert
+        with pytest.raises(StorageError, match="restart"):
+            read(notes)
+
+
+@pytest.mark.parametrize("upgrade", UPGRADES.values(), ids=UPGRADES.keys())
+def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_purges(
+    path: Path, upgrade: tuple[str, tuple[object, ...]]
+) -> None:
+    with MemoryEngine.sqlite(path) as engine:
+        # Arrange
+        notes, _ = prepare(engine)
+        notes.update(first(notes).id, expires_at=PAST)
+        before = run_sql(path, "SELECT * FROM memories ORDER BY seq")
+        run_sql(path, *upgrade)
+
+        # Act / Assert
+        with pytest.raises(StorageError, match="restart"):
+            engine.purge_expired()
+        assert run_sql(path, "SELECT * FROM memories ORDER BY seq") == before
 
 
 @pytest.mark.parametrize("upgrade", UPGRADES.values(), ids=UPGRADES.keys())

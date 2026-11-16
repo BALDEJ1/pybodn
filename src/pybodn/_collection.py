@@ -9,7 +9,7 @@ from typing import Any, TypedDict, Unpack
 from uuid import uuid4
 
 from pybodn import _validation as validate
-from pybodn._filter import Filter, Filters, checked
+from pybodn._filter import Filter, Filters, Visibility, checked
 from pybodn._mixing import mix
 from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit, SearchMode
 from pybodn._search import Term, query_terms
@@ -40,6 +40,7 @@ class MemoryFields(TypedDict, total=False):
     tags: Sequence[str]
     importance: float
     source: str | None
+    expires_at: datetime | None
 
 
 class NewMemoryFields(MemoryFields, total=False):
@@ -63,11 +64,16 @@ _FIELD_CHECKS: dict[str, Callable[[object], Any]] = {
     "tags": validate.tags,
     "importance": validate.importance,
     "source": validate.source,
+    "expires_at": validate.expiry,
 }
 
 
 class Collection:
     """The records of one namespace. Get it from ``MemoryEngine.collection()``.
+
+    Archived records, and those whose ``expires_at`` has come, stay in the store but are hidden:
+    every read leaves them out unless ``include_archived=True`` or ``include_expired=True`` asks
+    for them. Writes still reach them, and a hidden record keeps its key until it is deleted.
 
     With an embedding model, every write of a new text asks the model for its vector first,
     outside the store's lock, and writes nothing if the model fails.
@@ -112,7 +118,7 @@ class Collection:
         """Create the record with ``key``, or replace every field of it.
 
         A field not passed gets its default. A replaced record keeps its id, creation
-        time and place in ``list()``.
+        time and place in ``list()``, and comes back from the archive.
         """
         ensure_open(self._store)
         validate.reject_unknown("put", fields, MemoryFields.__optional_keys__)
@@ -134,20 +140,21 @@ class Collection:
 
         return self._store.modify(self._namespace, "key", checked_key, build, vector=vector)
 
-    def get(self, id: str) -> MemoryRecord | None:
-        """The record with this id, or ``None``."""
+    def get(self, id: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
+        """The record with this id, or ``None``; a hidden one only if the options ask for it."""
         ensure_open(self._store)
-        return self._store.get(self._namespace, "id", validate.text("id", id))
+        return self._get("get", "id", validate.text("id", id), options)
 
-    def get_by_key(self, key: str) -> MemoryRecord | None:
-        """The record with this key, or ``None``."""
+    def get_by_key(self, key: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
+        """The record with this key, or ``None``; a hidden one only if the options ask for it."""
         ensure_open(self._store)
-        return self._store.get(self._namespace, "key", validate.text("key", key))
+        return self._get("get_by_key", "key", validate.text("key", key), options)
 
     def update(
         self, id: str, *, expected_version: int | None = None, **changes: Unpack[MemoryChanges]
     ) -> MemoryRecord:
-        """Change only the fields passed. ``source=None`` clears the source.
+        """Change only the fields passed. ``source=None`` clears the source, and
+        ``expires_at=None`` the expiry. An archived record stays archived.
 
         Raises ``RecordNotFoundError`` if there is no such record, and
         ``ConcurrentUpdateError`` if ``expected_version`` is not the record's version.
@@ -160,10 +167,7 @@ class Collection:
         vector = None if text is None else self._vector_for("id", checked_id, text, creates=False)
 
         def build(current: MemoryRecord | None) -> MemoryRecord:
-            if current is None:
-                raise RecordNotFoundError(
-                    f"no record with id {checked_id!r} in namespace {self._namespace!r}"
-                )
+            current = self._found(current, checked_id)
             if expected is not None and current.version != expected:
                 raise ConcurrentUpdateError(
                     f"record {checked_id!r} is at version {current.version}, not {expected}"
@@ -173,6 +177,18 @@ class Collection:
             )
 
         return self._store.modify(self._namespace, "id", checked_id, build, vector=vector)
+
+    def archive(self, id: str) -> MemoryRecord:
+        """Hide the record from every read until ``restore()`` or ``put()``. Archiving it again
+        changes nothing. Raises ``RecordNotFoundError`` if there is no such record."""
+        ensure_open(self._store)
+        return self._set_archived(validate.text("id", id), archived=True)
+
+    def restore(self, id: str) -> MemoryRecord:
+        """Bring the record back from the archive. Restoring one not archived changes nothing.
+        Raises ``RecordNotFoundError`` if there is no such record."""
+        ensure_open(self._store)
+        return self._set_archived(validate.text("id", id), archived=False)
 
     def delete(self, id: str) -> bool:
         """Remove the record. ``False`` if there was none, so repeating is safe."""
@@ -192,11 +208,13 @@ class Collection:
         - ``min_importance``: importance at least this.
         - ``created_since``, ``created_before``: created at or after, and before, these
           moments; each a ``datetime`` with a time zone.
+
+        ``include_archived=True`` and ``include_expired=True`` keep those hidden records too.
         """
         ensure_open(self._store)
         return self._store.list(
             self._namespace,
-            where=checked("list", filters),
+            where=self._visible("list", filters),
             limit=validate.limit(limit),
             offset=validate.offset(offset),
         )
@@ -204,7 +222,7 @@ class Collection:
     def count(self, **filters: Unpack[Filters]) -> int:
         """The number of records, or of those that pass the filters ``list`` takes."""
         ensure_open(self._store)
-        return self._store.count(self._namespace, where=checked("count", filters))
+        return self._store.count(self._namespace, where=self._visible("count", filters))
 
     def search(
         self,
@@ -235,7 +253,7 @@ class Collection:
         takes.
         """
         ensure_open(self._store)
-        where = checked("search", filters)
+        where = self._visible("search", filters)
         text = validate.query(query)
         checked_limit = validate.search_limit(limit)
         checked_mode = validate.mode(mode)
@@ -248,6 +266,46 @@ class Collection:
             [vector] = self._vectorize([text])  # first, so that the model never holds up the store
             return self._search_both_ways(terms, vector, where, checked_limit)
         return self._store.search_words(self._namespace, terms, where=where, limit=checked_limit)
+
+    def _visible(
+        self,
+        method: str,
+        filters: Mapping[str, object],
+        known: frozenset[str] = Filters.__optional_keys__,
+    ) -> Filter:
+        """The filters passed to ``method``, which also leave out the records hidden now."""
+        return checked(method, filters, now=self._clock(), known=known)
+
+    def _get(
+        self, method: str, by: Lookup, value: str, options: Mapping[str, object]
+    ) -> MemoryRecord | None:
+        """The record ``by`` finds, if the options passed to ``method`` let it be seen."""
+        where = self._visible(method, options, Visibility.__optional_keys__)
+        record = self._store.get(self._namespace, by, value)
+        return record if record is not None and where.matches(record) else None
+
+    def _set_archived(self, id: str, *, archived: bool) -> MemoryRecord:
+        """Archive or restore the record; one already so is returned as it is."""
+
+        def build(current: MemoryRecord | None) -> MemoryRecord:
+            current = self._found(current, id)
+            if (current.archived_at is not None) == archived:
+                return current
+            now = self._clock()
+            return replace(
+                current,
+                archived_at=now if archived else None,
+                updated_at=now,
+                version=current.version + 1,
+            )
+
+        return self._store.modify(self._namespace, "id", id, build)
+
+    def _found(self, current: MemoryRecord | None, id: str) -> MemoryRecord:
+        """``current``, the record a write found by ``id``; ``RecordNotFoundError`` if none."""
+        if current is None:
+            raise RecordNotFoundError(f"no record with id {id!r} in namespace {self._namespace!r}")
+        return current
 
     def _search_by_meaning(self, query: str, where: Filter, limit: int) -> builtins.list[SearchHit]:
         if self._vectorize is None:
@@ -296,9 +354,10 @@ class Collection:
 
 
 def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:
-    """Check ``memory``. The result makes its record from an id, two times and a version."""
+    """Check ``memory``. The result makes its record, never archived, from an id, two times and
+    a version."""
     checked = {name: check(getattr(memory, name)) for name, check in _FIELD_CHECKS.items()}
-    return partial(MemoryRecord, namespace=namespace, **checked)
+    return partial(MemoryRecord, namespace=namespace, archived_at=None, **checked)
 
 
 def _reject_repeated_keys(records: Iterable[MemoryRecord]) -> None:

@@ -720,3 +720,28 @@ def test_timeout_accepts_seconds_and_returns_a_float(value: object, expected: fl
 def test_timeout_rejects_anything_else(value: object) -> None:
     with pytest.raises(ValidationError, match="timeout"):
         validate.timeout(value)
+
+
+def test_expiry_is_never_or_the_same_moment_in_utc() -> None:
+    kyiv = timezone(timedelta(hours=2))
+    assert validate.expiry(None) is None
+    assert validate.expiry(datetime(2026, 11, 14, 14, 30, tzinfo=kyiv)) == datetime(
+        2026, 11, 14, 12, 30, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize("value", [datetime(2026, 11, 14), "2026-11-14T00:00:00+00:00", 0])
+def test_expiry_rejects_anything_else_and_names_the_field(value: object) -> None:
+    with pytest.raises(ValidationError, match="^expires_at "):
+        validate.expiry(value)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_flag_accepts_true_or_false(value: bool) -> None:
+    assert validate.flag("include_archived", value) is value
+
+
+@pytest.mark.parametrize("value", [1, 0, "yes", None])
+def test_flag_rejects_anything_else_and_names_it(value: object) -> None:
+    with pytest.raises(ValidationError, match="^include_expired must be True or False"):
+        validate.flag("include_expired", value)

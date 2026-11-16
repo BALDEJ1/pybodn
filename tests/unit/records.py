@@ -19,4 +19,6 @@ RECORD = MemoryRecord(
     created_at=_NOW,
     updated_at=_NOW,
     version=1,
+    expires_at=None,
+    archived_at=None,
 )
