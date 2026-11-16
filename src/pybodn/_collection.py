@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pybodn import _validation as validate
 from pybodn._filter import Filter, Filters, checked
-from pybodn._mixing import FROM_EACH, mix
+from pybodn._mixing import mix
 from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit, SearchMode
 from pybodn._search import Term, query_terms
 from pybodn._storage.base import NO_VECTORS, Lookup, Store, Vector, ensure_open
@@ -27,6 +27,10 @@ type Clock = Callable[[], datetime]
 
 # Turns texts into the vectors an embedding model gives them, one for each, in the same order.
 type Vectorize = Callable[[Sequence[str]], list[Vector]]
+
+# How many of its best records each search gives a mixed search at the least: a record far down
+# one search still rises if the other ranks it high.
+_FROM_EACH = 50
 
 
 class MemoryFields(TypedDict, total=False):
@@ -223,13 +227,12 @@ class Collection:
         not found: see ``MemoryEngine.embed_missing()``.
 
         ``mode="auto"``, the default, searches by words, and with an embedding model by meaning
-        too, and mixes the two: of the best 50 records of each, or ``limit`` if more, a record
-        scores ``1 / (60 + place)`` for each that found it, added up, so that one found both
-        ways rises. Equal scores keep the order of the search by words, and its records come
-        before those found by meaning alone. If the model fails, the search raises its error.
+        too, and mixes the two by reciprocal rank fusion: a record found both ways rises, and
+        scores are small, such as 0.03. If the model fails, the search raises its error.
 
-        In a search one way only, equal scores keep the order the records were added in. A query
-        without words finds nothing. Filters are those ``list`` takes.
+        Equal scores keep the order the records were added in; in a mixed search, the order of
+        the search by words. A query without words finds nothing. Filters are those ``list``
+        takes.
         """
         ensure_open(self._store)
         where = checked("search", filters)
@@ -261,7 +264,7 @@ class Collection:
         self, terms: Sequence[Term], vector: Vector, where: Filter, limit: int
     ) -> builtins.list[SearchHit]:
         """Search by words and by meaning, each on its own, and mix what they find."""
-        each = max(FROM_EACH, limit)
+        each = max(_FROM_EACH, limit)
         by_words = self._store.search_words(self._namespace, terms, where=where, limit=each)
         by_meaning = self._store.search_vectors(self._namespace, vector, where=where, limit=each)
         return mix(by_words, by_meaning, limit=limit)

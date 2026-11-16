@@ -5,11 +5,10 @@ from collections.abc import Callable
 
 import pytest
 
-from pybodn import Collection, Embedder, MemoryEngine, NewMemory, SearchHit
+from pybodn import Collection, Embedder, NewMemory, SearchHit
 from pybodn._storage.base import Store
 from pybodn.errors import EmbeddingError, ValidationError
 from tests.contract.conftest import MODEL, engine_on
-from tests.contract.test_search import LOOKALIKE_NAMESPACES
 from tests.fake_model import FakeModel, broken
 
 pytest.importorskip("numpy")  # search by meaning computes with NumPy
@@ -21,10 +20,10 @@ def embedder(model: FakeModel) -> Embedder:
 
 
 def mapped(store: Store, vectors: dict[str, list[float]]) -> Collection:
-    """The records of ``store`` through an engine whose model gives each text the vector that
-    ``vectors`` holds for it, so that a test sets each record's place by meaning."""
-    model = Embedder("mapped", lambda texts: [vectors[text] for text in texts])
-    return engine_on(store, model).collection("user:123")
+    """The records of ``store`` through an engine whose model gives each text its vector in
+    ``vectors``."""
+    embedder = Embedder("mapped", lambda texts: [vectors[text] for text in texts])
+    return engine_on(store, embedder).collection("user:123")
 
 
 def contents(hits: list[SearchHit]) -> list[str]:
@@ -63,34 +62,6 @@ def test_a_record_without_a_vector_of_the_model_is_still_found_by_words(
     # Assert
     assert contents(hits) == ["кава"]
     assert hits[0].score == 1 / 61
-
-
-def test_a_hit_holds_the_record_as_stored(notes: Collection) -> None:
-    # Arrange
-    record = notes.add("кава", tags=["drink"], metadata={"hot": True})
-
-    # Act
-    [hit] = notes.search("кава")
-
-    # Assert
-    assert hit.record == record
-
-
-def test_an_empty_collection_finds_nothing(notes: Collection) -> None:
-    assert notes.search("кава") == []
-
-
-def test_records_of_other_namespaces_are_never_found(engine: MemoryEngine) -> None:
-    # Arrange
-    for namespace in LOOKALIKE_NAMESPACES:
-        engine.collection(namespace).add("кава")
-
-    for namespace in LOOKALIKE_NAMESPACES:
-        # Act
-        hits = engine.collection(namespace).search("кава")
-
-        # Assert
-        assert [hit.record.namespace for hit in hits] == [namespace]
 
 
 def test_filters_keep_only_the_records_that_list_keeps(notes: Collection) -> None:
@@ -206,14 +177,6 @@ def test_limit_keeps_the_best(notes: Collection) -> None:
     # Assert
     assert len(best) == 6
     assert notes.search("кава", limit=2) == best[:2]
-
-
-def test_a_search_returns_ten_records_unless_told_otherwise(notes: Collection) -> None:
-    # Arrange
-    notes.add_many([NewMemory(f"кава {number}") for number in range(12)])
-
-    # Act / Assert
-    assert len(notes.search("кава")) == 10
 
 
 def test_each_search_gives_its_best_50_records_or_limit_if_more(

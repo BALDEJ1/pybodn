@@ -19,7 +19,7 @@ STORES: dict[str, Callable[[Path], Store]] = {
     "sqlite": lambda folder: SQLiteStore(str(folder / "memory.db"), timeout=5.0),
 }
 
-# The name a module of tests gives ``model`` under.
+# The name the tests give ``model``, the fake model, when an engine uses it.
 MODEL = "fake-1"
 
 START = datetime(2026, 11, 13, 9, 55, 0, 123456, tzinfo=UTC)
