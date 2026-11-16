@@ -1,14 +1,13 @@
 """What the public API cannot show about the in-memory store."""
 
-from datetime import UTC, datetime
+from dataclasses import replace
 
 import pytest
 
 from pybodn._filter import EVERYTHING
 from pybodn._models import JSONValue, MemoryRecord
 from pybodn._storage.memory import InMemoryStore
-
-NOW = datetime(2026, 11, 13, 9, 55, tzinfo=UTC)
+from tests.unit.records import RECORD
 
 
 class Uncopyable:
@@ -21,19 +20,7 @@ class Uncopyable:
 def record(
     record_id: str, key: str | None = None, metadata: dict[str, JSONValue] | None = None
 ) -> MemoryRecord:
-    return MemoryRecord(
-        id=record_id,
-        namespace="user:123",
-        content="Prefers Python",
-        key=key,
-        metadata={} if metadata is None else metadata,
-        tags=(),
-        importance=0.5,
-        source=None,
-        created_at=NOW,
-        updated_at=NOW,
-        version=1,
-    )
+    return replace(RECORD, id=record_id, key=key, metadata={} if metadata is None else metadata)
 
 
 def test_a_batch_that_fails_to_copy_writes_nothing() -> None:

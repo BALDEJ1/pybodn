@@ -10,8 +10,9 @@ from uuid import uuid4
 
 from pybodn import _validation as validate
 from pybodn._filter import Filter, Filters, checked
+from pybodn._mixing import mix
 from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit, SearchMode
-from pybodn._search import query_terms
+from pybodn._search import Term, query_terms
 from pybodn._storage.base import NO_VECTORS, Lookup, Store, Vector, ensure_open
 from pybodn._words import words
 from pybodn.errors import (
@@ -26,6 +27,10 @@ type Clock = Callable[[], datetime]
 
 # Turns texts into the vectors an embedding model gives them, one for each, in the same order.
 type Vectorize = Callable[[Sequence[str]], list[Vector]]
+
+# How many of its best records each search gives a mixed search at the least: a record far down
+# one search still rises if the other ranks it high.
+_FROM_EACH = 50
 
 
 class MemoryFields(TypedDict, total=False):
@@ -211,29 +216,37 @@ class Collection:
     ) -> builtins.list[SearchHit]:
         """The records that best match ``query``, best first: at most ``limit`` of them.
 
-        ``mode="text"`` searches by words, and so does ``"auto"``. A record matches if it
-        holds any word of the query, in any case, with or without stress marks and
-        apostrophes. A word also finds its forms with another ending: "алергії" finds
-        "алергія". More of the query's words, rarer words and the exact forms rank a record
-        higher.
+        ``mode="text"`` searches by words. A record matches if it holds any word of the query,
+        in any case, with or without stress marks and apostrophes. A word also finds its forms
+        with another ending: "алергії" finds "алергія". More of the query's words, rarer words
+        and the exact forms rank a record higher.
 
         ``mode="vector"`` searches by meaning, and needs the engine's embedding model: the
         records whose vectors are closest to the query's come first, however far, each scored
         by its similarity to the query from -1 to 1. A record without a vector of the model is
         not found: see ``MemoryEngine.embed_missing()``.
 
-        Equal scores keep the order the records were added in. A query without words finds
-        nothing. Filters are those ``list`` takes.
+        ``mode="auto"``, the default, searches by words, and with an embedding model by meaning
+        too, and mixes the two by reciprocal rank fusion: a record found both ways rises, and
+        scores are small, such as 0.03. If the model fails, the search raises its error.
+
+        Equal scores keep the order the records were added in; in a mixed search, the order of
+        the search by words. A query without words finds nothing. Filters are those ``list``
+        takes.
         """
         ensure_open(self._store)
         where = checked("search", filters)
         text = validate.query(query)
         checked_limit = validate.search_limit(limit)
-        if validate.mode(mode) == "vector":
+        checked_mode = validate.mode(mode)
+        if checked_mode == "vector":
             return self._search_by_meaning(text, where, checked_limit)
         terms = query_terms(text)
         if not terms:
             return []
+        if checked_mode == "auto" and self._vectorize is not None:
+            [vector] = self._vectorize([text])  # first, so that the model never holds up the store
+            return self._search_both_ways(terms, vector, where, checked_limit)
         return self._store.search_words(self._namespace, terms, where=where, limit=checked_limit)
 
     def _search_by_meaning(self, query: str, where: Filter, limit: int) -> builtins.list[SearchHit]:
@@ -246,6 +259,15 @@ class Collection:
             return []
         [vector] = self._vectorize([query])
         return self._store.search_vectors(self._namespace, vector, where=where, limit=limit)
+
+    def _search_both_ways(
+        self, terms: Sequence[Term], vector: Vector, where: Filter, limit: int
+    ) -> builtins.list[SearchHit]:
+        """Search by words and by meaning, each on its own, and mix what they find."""
+        each = max(_FROM_EACH, limit)
+        by_words = self._store.search_words(self._namespace, terms, where=where, limit=each)
+        by_meaning = self._store.search_vectors(self._namespace, vector, where=where, limit=each)
+        return mix(by_words, by_meaning, limit=limit)
 
     def _vectors_of(self, records: Sequence[MemoryRecord]) -> Mapping[str, Vector]:
         """The vector of each record's text, by the record's id; none without a model."""

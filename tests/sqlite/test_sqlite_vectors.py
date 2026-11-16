@@ -1,5 +1,6 @@
-"""The vectors in the file: how they are stored, that a search there finds and ranks exactly as the
-in-memory store does, and that a vector never follows a record it was not made for."""
+"""The vectors in the file: how they are stored, that a search by meaning or a mixed one there finds
+and ranks exactly as the in-memory store does, and that a vector never follows a record it was not
+made for."""
 
 import hashlib
 import random
@@ -206,9 +207,11 @@ def described(hits: list[SearchHit]) -> list[tuple[str, object]]:
 )
 @pytest.mark.parametrize("limit", [5, 1_000])
 @pytest.mark.parametrize("query", ["кава", "чай молоко", "python", "зовсім інше"])
-def test_sqlite_finds_and_ranks_by_meaning_as_the_in_memory_store_does(
+@pytest.mark.parametrize("mode", ["vector", "auto"])
+def test_sqlite_finds_and_ranks_as_the_in_memory_store_does(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
     query: str,
     limit: int,
     filters: dict[str, Any],
@@ -224,7 +227,7 @@ def test_sqlite_finds_and_ranks_by_meaning_as_the_in_memory_store_does(
 
         for namespace in NAMESPACES:
             # Act
-            options: dict[str, Any] = {"mode": "vector", "limit": limit, **filters}
+            options: dict[str, Any] = {"mode": mode, "limit": limit, **filters}
             expected = memory.collection(namespace).search(query, **options)
             hits = sqlite_engine.collection(namespace).search(query, **options)
 

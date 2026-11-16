@@ -1,7 +1,6 @@
 """What happens to a record's vector when the record is written, the same in every store."""
 
 from dataclasses import replace
-from datetime import UTC, datetime
 
 import pytest
 
@@ -15,21 +14,7 @@ from pybodn._storage.base import (
     vector_after,
 )
 from pybodn.errors import EmbeddingError
-
-NOW = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
-RECORD = MemoryRecord(
-    id="a" * 32,
-    namespace="user:123",
-    content="кава",
-    key=None,
-    metadata={},
-    tags=(),
-    importance=0.5,
-    source=None,
-    created_at=NOW,
-    updated_at=NOW,
-    version=1,
-)
+from tests.unit.records import RECORD
 
 
 def holding(text: str) -> MemoryRecord:

@@ -1,8 +1,7 @@
 """Search by meaning, the same in every store: what an embedding model's vectors find, and how a
 record's vector follows its text through every write."""
 
-from collections.abc import Callable, Iterator
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -10,42 +9,16 @@ import pytest
 from pybodn import Collection, Embedder, MemoryEngine, NewMemory, SearchHit
 from pybodn._storage.base import Store
 from pybodn.errors import ConfigurationError, EmbeddingError, RecordNotFoundError
-from tests.contract.conftest import STORES, TickingClock
+from tests.contract.conftest import MODEL, engine_on
 from tests.contract.test_search import LOOKALIKE_NAMESPACES
-from tests.fake_model import FakeModel, vector_of
+from tests.fake_model import FakeModel, broken, vector_of
 
 pytest.importorskip("numpy")  # search by meaning computes with NumPy
 
-MODEL = "fake-1"
-
 
 @pytest.fixture
-def model() -> FakeModel:
-    return FakeModel()
-
-
-@pytest.fixture(params=list(STORES.values()), ids=list(STORES))
-def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Store]:
-    make_store: Callable[[Path], Store] = request.param
-    store = make_store(tmp_path)
-    yield store
-    store.close()
-
-
-def engine_on(store: Store, embedder: Embedder | None = None) -> MemoryEngine:
-    """An engine on ``store``, as each process opens the same file. The store outlives it."""
-    return MemoryEngine(store, clock=TickingClock(), embedder=embedder)
-
-
-@pytest.fixture
-def engine(store: Store, model: FakeModel) -> MemoryEngine:
-    return engine_on(store, Embedder(MODEL, model))
-
-
-@pytest.fixture
-def plain(store: Store) -> Collection:
-    """The same records through an engine without a model."""
-    return engine_on(store).collection("user:123")
+def embedder(model: FakeModel) -> Embedder:
+    return Embedder(MODEL, model)
 
 
 def by_meaning(notes: Collection, query: str, **options: Any) -> list[SearchHit]:
@@ -54,10 +27,6 @@ def by_meaning(notes: Collection, query: str, **options: Any) -> list[SearchHit]
 
 def found(notes: Collection, query: str, **options: Any) -> list[str]:
     return [hit.record.content for hit in by_meaning(notes, query, **options)]
-
-
-def broken(texts: list[str]) -> list[list[float]]:
-    raise RuntimeError("the model is down")
 
 
 # what a search finds ---------------------------------------------------------------------------
@@ -228,15 +197,14 @@ def test_a_search_by_meaning_needs_a_model(plain: Collection) -> None:
         by_meaning(plain, "кава")
 
 
-def test_text_and_auto_modes_still_search_by_words(notes: Collection, model: FakeModel) -> None:
+def test_text_mode_still_searches_by_words_alone(notes: Collection, model: FakeModel) -> None:
     # Arrange
     notes.add("кава")
     notes.add("чай")
     model.calls.clear()
 
     # Act / Assert
-    for mode in ("text", "auto"):
-        assert [hit.record.content for hit in notes.search("кава", mode=mode)] == ["кава"]
+    assert [hit.record.content for hit in notes.search("кава", mode="text")] == ["кава"]
     assert model.calls == []
 
 
@@ -423,6 +391,8 @@ def test_a_model_of_another_size_under_the_same_name_is_refused(
         others.add("чай")
     with pytest.raises(EmbeddingError, match=message):
         by_meaning(others, "кава")
+    with pytest.raises(EmbeddingError, match=message):
+        others.search("кава", mode="auto")
     assert [record.content for record in notes.list()] == ["кава"]
 
 

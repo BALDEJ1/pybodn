@@ -7,16 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from pybodn import Collection, MemoryEngine
+from pybodn import Collection, Embedder, MemoryEngine
 from pybodn._storage.base import Store
 from pybodn._storage.memory import InMemoryStore
 from pybodn._storage.sqlite import SQLiteStore
+from tests.fake_model import FakeModel
 
 # Each one makes a new, empty store; the path is a folder of its own.
 STORES: dict[str, Callable[[Path], Store]] = {
     "memory": lambda _: InMemoryStore(),
     "sqlite": lambda folder: SQLiteStore(str(folder / "memory.db"), timeout=5.0),
 }
+
+# The name the tests give ``model``, the fake model, when an engine uses it.
+MODEL = "fake-1"
 
 START = datetime(2026, 11, 13, 9, 55, 0, 123456, tzinfo=UTC)
 TICK = timedelta(seconds=1, microseconds=1)
@@ -40,13 +44,41 @@ class TickingClock:
         return now
 
 
+def engine_on(store: Store, embedder: Embedder | None = None) -> MemoryEngine:
+    """An engine on ``store``, as each process opens the same file. The store outlives it."""
+    return MemoryEngine(store, clock=TickingClock(), embedder=embedder)
+
+
 @pytest.fixture(params=list(STORES.values()), ids=list(STORES))
-def engine(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[MemoryEngine]:
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Store]:
     make_store: Callable[[Path], Store] = request.param
-    with MemoryEngine(make_store(tmp_path), clock=TickingClock()) as engine:
-        yield engine
+    store = make_store(tmp_path)
+    yield store
+    store.close()
+
+
+@pytest.fixture
+def model() -> FakeModel:
+    return FakeModel()
+
+
+@pytest.fixture
+def embedder() -> Embedder | None:
+    """The embedding model of ``engine``: none, unless a module of tests gives one."""
+    return None
+
+
+@pytest.fixture
+def engine(store: Store, embedder: Embedder | None) -> MemoryEngine:
+    return engine_on(store, embedder)
 
 
 @pytest.fixture
 def notes(engine: MemoryEngine) -> Collection:
     return engine.collection("user:123")
+
+
+@pytest.fixture
+def plain(store: Store) -> Collection:
+    """The records of ``notes`` through an engine without a model."""
+    return engine_on(store).collection("user:123")
