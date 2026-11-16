@@ -15,12 +15,15 @@ from pybodn._storage.base import (
     Build,
     Lookup,
     MissingVector,
+    TextAndKey,
     Unchanged,
     Vector,
     check_size,
     check_sizes,
     ensure_open,
     reject_stored_keys,
+    split_batch,
+    text_and_key,
     vector_after,
 )
 from pybodn._words import words
@@ -62,16 +65,32 @@ class InMemoryStore:
             record = self._find(namespace, by, value)
             return None if record is None else _copy(record)
 
-    def insert(
-        self, records: Sequence[MemoryRecord], *, vectors: Mapping[str, Vector] = NO_VECTORS
-    ) -> None:
-        copies = [_copy(record) for record in records]  # a copy that fails writes nothing
+    def find_copies(
+        self, namespace: str, records: Sequence[MemoryRecord], *, where: Filter
+    ) -> dict[TextAndKey, MemoryRecord]:
         with self._lock:
             ensure_open(self)
-            reject_stored_keys(copies, self._is_key_stored)
+            return self._copies(namespace, records, where)
+
+    def insert(
+        self,
+        namespace: str,
+        records: Sequence[MemoryRecord],
+        *,
+        vectors: Mapping[str, Vector] = NO_VECTORS,
+        dedupe: Filter | None = None,
+    ) -> builtins.list[MemoryRecord]:
+        # What is stored is a copy of each record: one that fails to copy writes nothing.
+        stored = {record.id: _copy(record) for record in records}
+        with self._lock:
+            ensure_open(self)
+            copies = None if dedupe is None else self._copies(namespace, records, dedupe)
+            returned, written = split_batch(records, copies)
+            reject_stored_keys(written, self._is_key_stored)
             check_sizes(vectors.values(), self._vector_size)
-            for record in copies:
-                self._write(record, vectors.get(record.id))
+            for record in written:
+                self._write(stored[record.id], vectors.get(record.id))
+            return returned
 
     def modify(
         self, namespace: str, by: Lookup, value: str, build: Build, *, vector: Vector | None = None
@@ -203,6 +222,17 @@ class InMemoryStore:
         if where == EVERYTHING:  # no filter to run each record through
             return [*records]
         return [record for record in records if where.matches(record)]
+
+    def _copies(
+        self, namespace: str, records: Sequence[MemoryRecord], where: Filter
+    ) -> dict[TextAndKey, MemoryRecord]:
+        """``find_copies``, under the lock: the copies are copied."""
+        wanted = {text_and_key(record) for record in records}
+        first: dict[TextAndKey, MemoryRecord] = {}
+        for record in self._kept(namespace, where):
+            if (copied := text_and_key(record)) in wanted:
+                first.setdefault(copied, record)
+        return {copied: _copy(record) for copied, record in first.items()}
 
     def _remove(self, namespace: str, id: str) -> bool:
         """Remove the record and its vector. ``False`` if there was none."""

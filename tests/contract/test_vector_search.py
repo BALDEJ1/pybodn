@@ -9,7 +9,12 @@ import pytest
 
 from pybodn import Collection, Embedder, MemoryEngine, NewMemory, SearchHit
 from pybodn._storage.base import Store
-from pybodn.errors import ConfigurationError, EmbeddingError, RecordNotFoundError
+from pybodn.errors import (
+    ConfigurationError,
+    DuplicateKeyError,
+    EmbeddingError,
+    RecordNotFoundError,
+)
 from tests.contract.conftest import MODEL, START, engine_on
 from tests.contract.test_search import LOOKALIKE_NAMESPACES
 from tests.fake_model import FakeModel, broken, vector_of
@@ -672,3 +677,79 @@ def test_embed_missing_gives_hidden_records_their_vectors_too(
     notes = engine.collection("user:123")
     assert written == 2
     assert found(notes, "кава", include_archived=True, include_expired=True) == ["кава", "чай"]
+
+
+# dedupe ------------------------------------------------------------------------------------------
+
+
+def test_dedupe_asks_the_model_only_about_new_texts(notes: Collection, model: FakeModel) -> None:
+    # Arrange
+    notes.add("кава")
+    calls = len(model.calls)
+
+    # Act
+    notes.add("кава", dedupe=True)
+    notes.add_many(
+        [NewMemory("чай"), NewMemory("кава"), NewMemory("чай"), NewMemory("молоко")], dedupe=True
+    )
+
+    # Assert
+    assert model.calls[calls:] == [["чай", "молоко"]]
+    assert sorted(found(notes, "кава")) == sorted(["кава", "чай", "молоко"])
+
+
+@pytest.mark.parametrize("dedupe", [False, True])
+def test_a_batch_that_repeats_a_key_fails_before_the_model_is_asked(
+    notes: Collection, model: FakeModel, dedupe: bool
+) -> None:
+    with pytest.raises(DuplicateKeyError, match="repeated within the batch"):
+        notes.add_many(
+            [NewMemory("чай", key="drink"), NewMemory("кава", key="drink")], dedupe=dedupe
+        )
+    assert model.calls == []
+
+
+def test_a_copy_added_while_the_model_works_is_returned_and_kept_alone(
+    store: Store, plain: Collection
+) -> None:
+    # Arrange: a model that lets another writer add the same text first
+    def embed(texts: list[str]) -> list[list[float]]:
+        plain.add("чай")
+        return [vector_of(text) for text in texts]
+
+    notes = engine_on(store, Embedder(MODEL, embed)).collection("user:123")
+
+    # Act
+    record = notes.add("чай", dedupe=True)
+
+    # Assert
+    assert plain.list() == [record]
+
+
+@pytest.mark.parametrize("how", ["delete", "archive"])
+def test_a_memory_whose_copy_goes_while_the_model_works_is_written_without_a_vector(
+    store: Store, plain: Collection, model: FakeModel, how: str
+) -> None:
+    # Arrange: a model that, asked about the new text, lets another writer take the copy away
+    copy = plain.add("кава")
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        if how == "delete":
+            plain.delete(copy.id)
+        else:
+            plain.archive(copy.id)
+        return model(texts)
+
+    engine = engine_on(store, Embedder(MODEL, embed))
+    notes = engine.collection("user:123")
+
+    # Act
+    coffee, tea = notes.add_many([NewMemory("кава"), NewMemory("чай")], dedupe=True)
+
+    # Assert
+    assert model.calls == [["чай"]]
+    assert coffee.id != copy.id
+    assert notes.list() == [coffee, tea]
+    assert found(notes, "кава") == ["чай"]
+    engine.embed_missing()
+    assert found(notes, "кава") == ["кава", "чай"]

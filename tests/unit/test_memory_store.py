@@ -34,14 +34,14 @@ def test_a_batch_that_fails_to_copy_writes_nothing() -> None:
 
     # Act / Assert
     with pytest.raises(RecursionError):
-        store.insert(batch)
+        store.insert("user:123", batch)
     assert store.count("user:123", where=EVERYTHING) == 0
 
 
 def test_deleting_the_last_record_of_a_namespace_releases_the_namespace() -> None:
     # Arrange
     store = InMemoryStore()
-    store.insert([record("a", key="language"), record("b")])
+    store.insert("user:123", [record("a", key="language"), record("b")])
 
     # Act
     store.delete("user:123", "a")
@@ -54,7 +54,7 @@ def test_deleting_the_last_record_of_a_namespace_releases_the_namespace() -> Non
 def test_deleting_a_record_releases_its_key() -> None:
     # Arrange
     store = InMemoryStore()
-    store.insert([record("a", key="language"), record("b")])
+    store.insert("user:123", [record("a", key="language"), record("b")])
 
     # Act
     store.delete("user:123", "a")
@@ -66,7 +66,7 @@ def test_deleting_a_record_releases_its_key() -> None:
 def test_close_releases_every_record() -> None:
     # Arrange
     store = InMemoryStore()
-    store.insert([record("a")])
+    store.insert("user:123", [record("a")])
 
     # Act
     store.close()

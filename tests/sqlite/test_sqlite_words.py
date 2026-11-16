@@ -75,6 +75,9 @@ WRITES: dict[str, Callable[[Collection, Collection], object]] = {
     "add-many": lambda notes, others: notes.add_many(
         [NewMemory("Python"), NewMemory("Кава"), NewMemory("???")]
     ),
+    "add-many-with-dedupe": lambda notes, others: notes.add_many(
+        [NewMemory("Кава без цукру", key="drink"), NewMemory("Чай"), NewMemory("Чай")], dedupe=True
+    ),
     "put-new": lambda notes, others: notes.put("tea", "Чай з медом"),
     "put-new-text": lambda notes, others: notes.put("drink", "Чай з медом"),
     "put-same-text": lambda notes, others: notes.put("drink", "Кава без цукру", tags=["x"]),
