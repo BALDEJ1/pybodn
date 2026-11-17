@@ -36,6 +36,10 @@ _MAX_TEXT_BYTES = 16 * 1024 * 1024
 # comes near this many.
 _MAX_FILTER_ITEMS = 100
 
+# Older SQLite, such as 3.34, cuts JSON text at this character, so tags and metadata, kept as
+# JSON, refuse it: a filter would otherwise keep the wrong records there.
+_NUL = "\x00"
+
 _MODES: tuple[SearchMode, ...] = get_args(SearchMode.__value__)
 
 
@@ -71,7 +75,8 @@ def importance(value: object, *, name: str = "importance") -> float:
 
 
 def metadata(value: object) -> dict[str, JSONValue]:
-    """A deep copy: JSON values under string keys, at most 100 levels deep.
+    """A deep copy: JSON values under string keys, at most 100 levels deep, with no NUL
+    character in any key or text.
 
     At most 1,000,000 values and 16 MB of text in all, counted as written out: the
     mapping and every list and dict are one value each, keys count as text in UTF-8,
@@ -95,10 +100,10 @@ def metadata(value: object) -> dict[str, JSONValue]:
 
 
 def tags(value: object) -> tuple[str, ...]:
-    """Non-empty strings, without duplicates, in first-seen order."""
+    """Non-empty strings without a NUL character, without duplicates, in first-seen order."""
     if isinstance(value, str) or not isinstance(value, Iterable):
         raise ValidationError("tags must be a list of strings")
-    return tuple(dict.fromkeys(text("tag", tag) for tag in value))
+    return tuple(dict.fromkeys(_without_nul("tag", text("tag", tag)) for tag in value))
 
 
 def tag_filter(value: object) -> tuple[str, ...]:
@@ -112,8 +117,9 @@ def tag_filter(value: object) -> tuple[str, ...]:
 def metadata_values(value: object) -> tuple[tuple[str, JSONScalar], ...]:
     """Top-level metadata fields, each with the value it must equal, in the order given.
 
-    At most 100 fields. A value is a string, ``True``, ``False``, ``None``, or a number
-    metadata can hold: a finite float or an integer that fits in 64 bits.
+    At most 100 fields, and no NUL character in a key or text. A value is a string, ``True``,
+    ``False``, ``None``, or a number metadata can hold: a finite float or an integer that fits
+    in 64 bits.
     """
     if not isinstance(value, Mapping):
         raise ValidationError(f"metadata must be a mapping, not {type(value).__name__}")
@@ -121,7 +127,7 @@ def metadata_values(value: object) -> tuple[tuple[str, JSONScalar], ...]:
         raise ValidationError(
             f"metadata must not hold more than {_MAX_FILTER_ITEMS} fields to match"
         )
-    return tuple((_string("metadata key", key), _scalar(item)) for key, item in value.items())
+    return tuple((_json_text("metadata key", key), _scalar(item)) for key, item in value.items())
 
 
 def moment(name: str, value: object) -> datetime:
@@ -205,9 +211,7 @@ def memories(value: object) -> list[NewMemory]:
 def path(value: object) -> str:
     """A database path: a non-empty string or a path object, as ``str``."""
     result = text("path", os.fspath(value) if isinstance(value, os.PathLike) else value)
-    if "\x00" in result:
-        raise ValidationError("path must not contain a NUL character")
-    return result
+    return _without_nul("path", result)
 
 
 def embedder(value: object) -> Embedder | None:
@@ -244,6 +248,17 @@ def _string(name: str, value: object) -> str:
     return str.__str__(value)
 
 
+def _json_text(name: str, value: object) -> str:
+    """A string to match against text kept as JSON."""
+    return _without_nul(name, _string(name, value))
+
+
+def _without_nul(name: str, value: str) -> str:
+    if _NUL in value:
+        raise ValidationError(f"{name} must not contain a NUL character")
+    return value
+
+
 def _as_float(value: object) -> float | None:
     """``value`` as a float if it is a real number other than ``bool`` that fits one."""
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
@@ -259,7 +274,7 @@ def _scalar(value: object) -> JSONScalar:
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return _string("metadata value", value)
+        return _json_text("metadata value", value)
     if isinstance(value, int) and _fits_64_bits(value):
         return int(value)
     if isinstance(value, float) and math.isfinite(value):
@@ -312,13 +327,15 @@ def _check_nesting(value: object, *, levels_left: int, room: _Size) -> _Size:
 
 
 def _text_bytes(text: str, bytes_left: int) -> int:
-    """The size of ``text`` in UTF-8, if it fits in ``bytes_left``."""
+    """The size of a metadata key or text in UTF-8, if it fits in ``bytes_left`` and holds
+    no NUL character."""
     # Every character takes at least a byte, so a text with more characters cannot fit:
     # no need to encode it. Lone surrogates are rejected later, when the whole is encoded.
     too_long = len(text) > bytes_left
     size = len(text) if too_long else len(text.encode("utf-8", "surrogatepass"))
     if size > bytes_left:
         raise ValidationError(f"metadata must not hold more than {_MAX_TEXT_BYTES:,} bytes of text")
+    _without_nul("metadata", text)
     return size
 
 

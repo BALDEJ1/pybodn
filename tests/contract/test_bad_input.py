@@ -2,12 +2,13 @@
 
 import math
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
 import pytest
 
-from pybodn import Collection, MemoryEngine, NewMemory
+from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
 from pybodn.errors import ValidationError
 
 MAX_INTEGER = 2**63 - 1
@@ -33,8 +34,11 @@ BAD_FIELDS = [
     pytest.param({"metadata": {"value": 10**5000}}, id="huge-integer-in-metadata"),
     pytest.param({"metadata": {"value": MAX_INTEGER + 1}}, id="integer-past-64-bits-in-metadata"),
     pytest.param({"metadata": {"value": LONE_SURROGATE}}, id="lone-surrogate-in-metadata"),
+    pytest.param({"metadata": {"a\x00b": 1}}, id="nul-in-metadata-key"),
+    pytest.param({"metadata": {"list": ["a\x00b"]}}, id="nul-in-metadata-text"),
     pytest.param({"tags": [""]}, id="empty-tag"),
     pytest.param({"tags": "pref"}, id="tags-as-one-string"),
+    pytest.param({"tags": ["a\x00b"]}, id="nul-in-tag"),
     pytest.param({"source": LONE_SURROGATE}, id="lone-surrogate-source"),
 ]
 
@@ -203,12 +207,19 @@ def test_bad_query_is_rejected(notes: Collection, query: Any) -> None:
         notes.search(query)
 
 
-# One bad value per filter, to show that each reaches its check through every method that takes
-# filters.
+# One bad value per filter, and a NUL character wherever tags and metadata refuse one, to show
+# that each reaches its check through every method that takes filters.
 # What each check accepts and rejects is tested in tests/unit/test_validation.py.
 BAD_FILTERS = [
     pytest.param({"tags": [""]}, "tag must not be empty", id="tags"),
+    pytest.param({"tags": ["a\x00b"]}, "tag must not contain a NUL", id="nul-in-tag"),
     pytest.param({"metadata": {"topic": ["food"]}}, "metadata values to match", id="metadata"),
+    pytest.param(
+        {"metadata": {"a\x00b": 1}}, "metadata key must not contain a NUL", id="nul-in-key"
+    ),
+    pytest.param(
+        {"metadata": {"key": "a\x00b"}}, "metadata value must not contain a NUL", id="nul-in-value"
+    ),
     pytest.param({"min_importance": 1.5}, "min_importance must be", id="min_importance"),
     pytest.param({"created_since": datetime(2026, 1, 1)}, "created_since must be", id="since"),
     pytest.param({"created_before": datetime(2026, 1, 1)}, "created_before must be", id="before"),
@@ -221,6 +232,25 @@ WITH_FILTERS: dict[str, Callable[[Collection, dict[str, Any]], object]] = {
     "count": lambda notes, filters: notes.count(**filters),
     "search": lambda notes, filters: notes.search("Python", **filters),
 }
+
+
+def test_a_nul_stored_before_it_was_refused_stays_as_it_is(
+    engine: MemoryEngine, notes: Collection
+) -> None:
+    # Arrange: version 0.2.0 let a NUL character into tags and metadata
+    def with_nul(current: MemoryRecord | None) -> MemoryRecord:
+        assert current is not None
+        return replace(current, tags=("a\x00b",), metadata={"k\x00": "v\x00"})
+
+    record = notes.add("Prefers Python")
+    old = engine._store.modify("user:123", "id", record.id, with_nul)
+
+    # Act
+    changed = notes.update(record.id, content="Prefers Rust", importance=0.9)
+
+    # Assert
+    assert (changed.tags, changed.metadata) == (old.tags, old.metadata)
+    assert notes.get(record.id) == changed
 
 
 @pytest.mark.parametrize(("filters", "message"), BAD_FILTERS)

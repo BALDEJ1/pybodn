@@ -179,7 +179,7 @@ def test_importance_rejects_anything_else(value: object) -> None:
 
 def test_metadata_returns_an_equal_dict() -> None:
     # Arrange
-    original = {"text": "юнікод 🙂\x00", "number": 1, "float": 2.5, "flag": True, "none": None}
+    original = {"text": "юнікод 🙂", "number": 1, "float": 2.5, "flag": True, "none": None}
 
     # Act
     result = validate.metadata(MappingProxyType(original))
@@ -382,6 +382,24 @@ def test_metadata_rejects_anything_but_json_with_string_keys(value: object) -> N
         validate.metadata(value)
 
 
+# Older SQLite, such as 3.34, cuts JSON text at a NUL character, so a filter on such a tag or
+# metadata field would keep the wrong records there.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"value": "a\x00b"}, id="value"),
+        pytest.param({"a\x00b": "value"}, id="key"),
+        pytest.param({"list": [[{"deep": "\x00"}]]}, id="deep-value"),
+        pytest.param({"list": [{"deep\x00": 1}]}, id="deep-key"),
+    ],
+)
+def test_metadata_rejects_a_nul_character_in_any_text(value: object) -> None:
+    with pytest.raises(ValidationError, match="^metadata must not contain a NUL character$"):
+        validate.metadata(value)
+
+
 # tags ----------------------------------------------------------------------------------------
 
 
@@ -401,6 +419,12 @@ def test_tags_are_plain_strs() -> None:
 def test_tags_reject_anything_else(value: object) -> None:
     with pytest.raises(ValidationError, match="tag"):
         validate.tags(value)
+
+
+@pytest.mark.parametrize("tag", ["a\x00b", "\x00"])
+def test_tags_reject_a_nul_character(tag: str) -> None:
+    with pytest.raises(ValidationError, match="^tag must not contain a NUL character$"):
+        validate.tags(["pref", tag])
 
 
 def test_a_tag_filter_takes_up_to_100_tags_counted_without_duplicates() -> None:
@@ -482,6 +506,18 @@ def test_metadata_values_accept_integers_that_fit_in_64_bits(value: int) -> None
 )
 def test_metadata_values_reject_anything_else(value: object) -> None:
     with pytest.raises(ValidationError, match="metadata"):
+        validate.metadata_values(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "name"),
+    [
+        pytest.param({"a\x00b": "value"}, "metadata key", id="key"),
+        pytest.param({"key": "a\x00b"}, "metadata value", id="value"),
+    ],
+)
+def test_metadata_values_reject_a_nul_character(value: object, name: str) -> None:
+    with pytest.raises(ValidationError, match=f"^{name} must not contain a NUL character$"):
         validate.metadata_values(value)
 
 
