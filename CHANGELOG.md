@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The SQLite file moves to schema version 3: each record keeps when it expires and when it was archived, and the indexes a namespace's reads go through hold both, so that a read leaves hidden records out without reading their rows. The first open of an older file rebuilds those two indexes while it holds the file's write lock, about 0.1 seconds per 100,000 records on an Apple M4.
 - A process that opened a file before a newer pybodn upgraded it now also raises `StorageError` on its next read, not only on its next write or search, since the newer pybodn may hide records it would show.
+- Tags, and every key and text in `metadata` at any depth, must not hold a NUL character, `"\x00"`, whether written or given to a filter: `ValidationError` says so, for both storages. Older SQLite, such as 3.34, cuts the JSON they are kept in at that character, so a filter on them kept the wrong records there. Records already stored with one keep it.
 
 ## [0.2.0] - 2026-11-16
 

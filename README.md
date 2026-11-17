@@ -482,6 +482,8 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
 - `namespace`, `content`, keys, ids and tags are non-empty strings. Every string must be
   encodable as UTF-8, so a lone surrogate such as `"\ud800"` is rejected.
 - `tags` is a list or another iterable of strings, never a single string.
+- Tags, and every key and text in `metadata`, hold no NUL character, `"\x00"`: older SQLite,
+  such as 3.34, cuts the JSON they are kept in at one, so filters would go wrong.
 - `importance` is a number from 0 to 1 and is stored as a `float`. `True`, `False` and NaN are
   rejected.
 - `metadata` is a mapping with string keys and JSON values: `str`, `int`, `float`, `bool`,
