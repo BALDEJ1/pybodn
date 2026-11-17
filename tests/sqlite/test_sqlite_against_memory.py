@@ -30,31 +30,24 @@ SEED = 20261117
 STEPS = 500
 MODEL = "fake-1"
 NAMESPACES = ("user:1", "user:2")
-WORDS = (
-    "кава",
-    "чай",
-    "молоко",
-    "арахіс",
-    "алергія",
-    "python",
-    "зранку",
-)  # the last, not a model's
+# The last word is not one the model counts.
+WORDS = ("кава", "чай", "молоко", "арахіс", "алергія", "python", "зранку")
 KEYS = (None, None, "a", "b", "c")
 TAGS = ("health", "food", "work")
 MISSING_ID = "0" * 32
-KINDS = (
-    *["add"] * 4,
-    *["add-many"] * 2,
-    *["add-without-model"] * 2,
-    *["put"] * 2,
-    *["update"] * 3,
-    *["update-without-model"] * 2,
-    "delete",
-    "archive",
-    "restore",
-    "purge-expired",
-    "embed-missing",
-)
+# Each kind of write, and how often it comes up against the others.
+KINDS = {
+    "add": 6,
+    "add-many": 2,
+    "put": 2,
+    "update": 5,
+    "delete": 1,
+    "archive": 1,
+    "restore": 1,
+    "purge-expired": 1,
+    "embed-missing": 1,
+}
+WITH_MODEL = 0.7  # how often a write of a collection goes through the engine with the model
 
 type IdOf = Callable[[str], str]  # the id the side gives the record of this id in memory
 
@@ -78,7 +71,7 @@ def side_on(store: Store, clock: Clock) -> Side:
 
 
 def text(rng: random.Random) -> str:
-    return " ".join(rng.choices(WORDS, k=rng.randint(1, 3)))
+    return " ".join(rng.choices(WORDS, k=rng.randint(1, 2)))
 
 
 def fields(rng: random.Random, clock: Clock) -> dict[str, Any]:
@@ -97,39 +90,33 @@ def fields(rng: random.Random, clock: Clock) -> dict[str, Any]:
 
 def draw(rng: random.Random, clock: Clock, stored: Callable[[str], list[MemoryRecord]]) -> Write:
     """A write of a random kind, with random fields, on a record of the store in memory."""
-    namespace = rng.choice(NAMESPACES)
+    kind = rng.choices([*KINDS], weights=[*KINDS.values()])[0]
+    namespace, with_model = rng.choice(NAMESPACES), rng.random() < WITH_MODEL
     records = stored(namespace)
     target = rng.choice(records).id if records and rng.random() < 0.9 else MISSING_ID
-    kind = rng.choice(KINDS)
-    content, drawn, key, dedupe = (
-        text(rng),
-        fields(rng, clock),
-        rng.choice(KEYS),
-        rng.random() < 0.5,
-    )
-    with_model = not kind.endswith("-without-model")
+    content, key = text(rng), rng.choice(KEYS)
+    drawn, dedupe = fields(rng, clock), rng.random() < 0.5
     changes = {"content": content, **drawn} if rng.random() < 0.6 or not drawn else drawn
     memories = [
         NewMemory(text(rng), key=rng.choice(KEYS), **fields(rng, clock))
         for _ in range(rng.randint(1, 3))
     ]
+
+    def notes(side: Side) -> Collection:
+        return side.notes(namespace, with_model=with_model)
+
     writes: dict[str, Write] = {
-        "add": lambda side, _: side.notes(namespace).add(content, key=key, dedupe=dedupe, **drawn),
-        "add-many": lambda side, _: side.notes(namespace).add_many(memories, dedupe=dedupe),
-        "add-without-model": lambda side, _: side.notes(namespace, with_model=False).add(
-            content, key=key, **drawn
-        ),
-        "put": lambda side, _: side.notes(namespace).put(key or "a", content, **drawn),
-        "update": lambda side, id_of: side.notes(namespace, with_model=with_model).update(
-            id_of(target), **changes
-        ),
-        "delete": lambda side, id_of: side.notes(namespace).delete(id_of(target)),
-        "archive": lambda side, id_of: side.notes(namespace).archive(id_of(target)),
-        "restore": lambda side, id_of: side.notes(namespace).restore(id_of(target)),
+        "add": lambda side, _: notes(side).add(content, key=key, dedupe=dedupe, **drawn),
+        "add-many": lambda side, _: notes(side).add_many(memories, dedupe=dedupe),
+        "put": lambda side, _: notes(side).put(key or "a", content, **drawn),
+        "update": lambda side, id_of: notes(side).update(id_of(target), **changes),
+        "delete": lambda side, id_of: notes(side).delete(id_of(target)),
+        "archive": lambda side, id_of: notes(side).archive(id_of(target)),
+        "restore": lambda side, id_of: notes(side).restore(id_of(target)),
         "purge-expired": lambda side, _: side.engine.purge_expired(),
         "embed-missing": lambda side, _: side.engine.embed_missing(),
     }
-    return writes["update" if kind == "update-without-model" else kind]
+    return writes[kind]
 
 
 def attempt(write: Write, side: Side, id_of: IdOf) -> object:

@@ -10,9 +10,11 @@ TEXTS = [
     pytest.param("юнікод і емодзі 🙂", id="unicode"),
     pytest.param("x" * 100_000, id="long"),
 ]
+# Tags and metadata refuse a NUL character; every other text field takes it.
+TEXTS_WITH_NUL = [*TEXTS, pytest.param("nul\x00inside", id="nul")]
 
 
-@pytest.mark.parametrize("text", [*TEXTS, pytest.param("nul\x00inside", id="nul")])
+@pytest.mark.parametrize("text", TEXTS_WITH_NUL)
 def test_text_comes_back_unchanged_in_every_text_field(engine: MemoryEngine, text: str) -> None:
     # Arrange
     notes = engine.collection(text)
@@ -25,7 +27,7 @@ def test_text_comes_back_unchanged_in_every_text_field(engine: MemoryEngine, tex
     assert notes.get_by_key(text) == record
 
 
-@pytest.mark.parametrize("text", TEXTS)  # tags and metadata refuse a NUL character
+@pytest.mark.parametrize("text", TEXTS)
 def test_text_comes_back_unchanged_in_tags_and_metadata(notes: Collection, text: str) -> None:
     # Act
     record = notes.add("Prefers Python", metadata={text: [text]}, tags=[text])
