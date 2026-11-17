@@ -1,10 +1,12 @@
-"""The async engine: each method is the sync method of the same name, run in a thread of asyncio's,
-a few at a time."""
+"""The async engine: each method is the sync method of the same name, run in one of a few threads
+the event loop has for its engines."""
 
 import asyncio
 import contextvars
+import gc
 import inspect
 import threading
+import weakref
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -219,6 +221,36 @@ def test_in_memory_opens_an_empty_engine() -> None:
     assert asyncio.run(count()) == 0
 
 
+@pytest.mark.parametrize(
+    "opening",
+    [
+        pytest.param(AsyncMemoryEngine.sqlite, id="sqlite"),
+        pytest.param(lambda _: AsyncMemoryEngine.in_memory(), id="in-memory"),
+    ],
+)
+def test_opening_waits_for_a_free_thread(opening: Any, tmp_path: Path) -> None:
+    gate = Gate()
+
+    async def open_while_every_thread_is_taken() -> bool:
+        async with engine_with(gate) as engine:
+            # Arrange
+            notes = engine.collection("user:123")
+            held = [asyncio.create_task(notes.count()) for _ in range(_MAX_CALLS_AT_ONCE)]
+            await gate.holds(_MAX_CALLS_AT_ONCE)
+
+            # Act
+            opened = asyncio.create_task(opening(tmp_path / "memory.db"))
+            await asyncio.sleep(SHORT_WAIT)
+            waited = not opened.done()
+            gate.open()
+            await asyncio.gather(*held)
+            await (await opened).close()
+            return waited
+
+    # Assert
+    assert asyncio.run(open_while_every_thread_is_taken())
+
+
 # Closing -------------------------------------------------------------------------------------
 
 
@@ -241,10 +273,10 @@ def test_after_close_every_call_raises_engine_closed_error_and_close_is_safe_aga
     asyncio.run(close_then_use())
 
 
-def test_close_does_not_wait_for_a_place() -> None:
+def test_close_does_not_wait_for_a_free_thread() -> None:
     gate = Gate()
 
-    async def close_while_every_place_is_taken() -> list[object]:
+    async def close_while_every_thread_is_taken() -> list[object]:
         # Arrange
         engine = engine_with(gate)
         notes = engine.collection("user:123")
@@ -260,7 +292,7 @@ def test_close_does_not_wait_for_a_place() -> None:
         gate.open()
         return await asyncio.gather(*held, return_exceptions=True)
 
-    results = asyncio.run(close_while_every_place_is_taken())
+    results = asyncio.run(close_while_every_thread_is_taken())
     assert [type(result) for result in results] == [EngineClosedError] * _MAX_CALLS_AT_ONCE
 
 
@@ -297,27 +329,7 @@ def test_the_event_loop_runs_on_while_a_call_waits() -> None:
     assert asyncio.run(count_while_releasing()) == 0
 
 
-def test_a_few_calls_run_at_once_and_the_rest_wait() -> None:
-    gate = Gate()
-
-    async def count_one_past_the_limit() -> list[int]:
-        async with engine_with(gate) as engine:
-            # Arrange
-            notes = engine.collection("user:123")
-
-            # Act
-            calls = [asyncio.create_task(notes.count()) for _ in range(_MAX_CALLS_AT_ONCE + 1)]
-
-            # Assert: the limit of calls go in, and the next one waits for a place
-            await gate.holds(_MAX_CALLS_AT_ONCE)
-            assert not await gate.one_more_comes()
-            gate.open()
-            return await asyncio.gather(*calls)
-
-    assert asyncio.run(count_one_past_the_limit()) == [0] * (_MAX_CALLS_AT_ONCE + 1)
-
-
-def test_every_engine_on_an_event_loop_shares_the_places() -> None:
+def test_the_engines_on_an_event_loop_run_a_few_calls_at_once_together() -> None:
     gate = Gate()
 
     async def count_one_past_the_limit_on_two_engines() -> list[int]:
@@ -328,7 +340,7 @@ def test_every_engine_on_an_event_loop_shares_the_places() -> None:
                 for number in range(_MAX_CALLS_AT_ONCE + 1)
             ]
 
-            # Assert
+            # Assert: the limit of calls go in, and the next one waits for a free thread
             await gate.holds(_MAX_CALLS_AT_ONCE)
             assert not await gate.one_more_comes()
             gate.open()
@@ -337,25 +349,52 @@ def test_every_engine_on_an_event_loop_shares_the_places() -> None:
     assert asyncio.run(count_one_past_the_limit_on_two_engines()) == [0] * (_MAX_CALLS_AT_ONCE + 1)
 
 
-def test_an_engine_serves_one_event_loop_after_another() -> None:
-    # Arrange: more calls than places, so that some wait in each event loop
+def test_each_event_loop_has_threads_of_its_own() -> None:
+    gate = Gate()
+
+    async def count() -> int:
+        return await engine_with(lambda: NOW).collection("user:123").count()
+
+    async def count_on_another_event_loop_while_every_thread_is_taken() -> int:
+        async with engine_with(gate) as engine:
+            # Arrange
+            notes = engine.collection("user:123")
+            held = [asyncio.create_task(notes.count()) for _ in range(_MAX_CALLS_AT_ONCE)]
+            await gate.holds(_MAX_CALLS_AT_ONCE)
+
+            # Act
+            counted = await asyncio.to_thread(asyncio.run, count())
+            gate.open()
+            await asyncio.gather(*held)
+            return counted
+
+    # Assert: the other event loop did not wait for this one's threads, which the gate held
+    assert asyncio.run(count_on_another_event_loop_while_every_thread_is_taken()) == 0
+
+
+def test_an_engine_serves_one_event_loop_after_another_and_keeps_none_once_it_ends() -> None:
+    # Arrange: more calls than threads, so that some wait their turn on each event loop
     engine = engine_with(lambda: NOW)
+    loops: list[weakref.ref[asyncio.AbstractEventLoop]] = []
 
     async def count_many() -> list[int]:
+        loops.append(weakref.ref(asyncio.get_running_loop()))
         notes = engine.collection("user:123")
         return await asyncio.gather(*(notes.count() for _ in range(_MAX_CALLS_AT_ONCE * 2)))
 
     # Act / Assert
     for _ in range(2):
         assert asyncio.run(count_many()) == [0] * _MAX_CALLS_AT_ONCE * 2
+    gc.collect()
+    assert [loop() for loop in loops] == [None, None]
 
 
-def test_a_call_given_up_on_keeps_its_place_until_its_thread_ends() -> None:
+def test_a_call_given_up_on_keeps_its_thread_until_it_ends() -> None:
     gate = Gate()
 
     async def give_up_then_count() -> int:
         async with engine_with(gate) as engine:
-            # Arrange: held calls take every place
+            # Arrange: held calls take every thread
             notes = engine.collection("user:123")
             held = [asyncio.create_task(notes.count()) for _ in range(_MAX_CALLS_AT_ONCE)]
             await gate.holds(_MAX_CALLS_AT_ONCE)
@@ -365,7 +404,7 @@ def test_a_call_given_up_on_keeps_its_place_until_its_thread_ends() -> None:
                 task.cancel()
             later = asyncio.create_task(notes.count())
 
-            # Assert: the new call waits for a place, and gets one once the threads end
+            # Assert: the new call waits for a free thread, and gets one once the held calls end
             assert not await gate.one_more_comes()
             gate.open()
             return await later

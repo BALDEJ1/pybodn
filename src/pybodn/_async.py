@@ -1,4 +1,4 @@
-"""The async engine: each method runs the sync method of the same name in a thread of asyncio's.
+"""The async engine: each method runs the sync method of the same name in a thread.
 
 The checks, errors and results are those of ``MemoryEngine`` and ``Collection``, and the event
 loop runs on while a call waits for the file's lock or the embedding model.
@@ -6,9 +6,12 @@ loop runs on while a call waits for the file's lock or the embedding model.
 
 import asyncio
 import builtins
+import contextvars
+import functools
 import os
 import weakref
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Self, Unpack
 
 from pybodn._collection import Collection, MemoryChanges, MemoryFields, NewMemoryFields
@@ -16,37 +19,32 @@ from pybodn._engine import MemoryEngine
 from pybodn._filter import Filters, Visibility
 from pybodn._models import Embedder, MemoryRecord, NewMemory, SearchHit, SearchMode
 
-# The calls of every engine on one event loop take at most this many threads of the loop's
-# default pool at once. That pool also serves the rest of the program, such as looking up
-# addresses, and calls waiting for the file's lock would fill it; the calls past this many wait
-# in the event loop instead.
+# Each event loop has this many threads of its own for the calls of all its engines; the calls
+# past this many wait their turn. Calls waiting for the file's lock would otherwise fill the
+# loop's default pool, which also serves the rest of the program, such as looking up addresses.
+# The threads are the loop's own, not the program's, so that a child process, whose event loops
+# are new, never waits for threads it does not have; they go when the loop goes.
 _MAX_CALLS_AT_ONCE = 4
 
-_places_of: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+_threads_of: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, ThreadPoolExecutor] = (
     weakref.WeakKeyDictionary()
 )
 
 
-def _places() -> asyncio.Semaphore:
-    """The places for calls on the running event loop, shared by every engine on it."""
-    loop = asyncio.get_running_loop()
-    places = _places_of.get(loop)
-    if places is None:
-        places = _places_of[loop] = asyncio.Semaphore(_MAX_CALLS_AT_ONCE)
-    return places
-
-
 async def _in_thread[**P, R](function: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
-    """``function`` run in a thread of asyncio's once a place is free.
+    """``function`` run in a thread of the running event loop's own, with the caller's context.
 
-    A call given up on, as on a timeout, runs on in its thread, and keeps its place until it
-    ends: a thread cannot be stopped, and the limit would not hold otherwise.
+    A call given up on, as on a timeout, once begun runs on in its thread, which it keeps until
+    it ends: a thread cannot be stopped.
     """
-    places = _places()
-    await places.acquire()
-    call = asyncio.ensure_future(asyncio.to_thread(function, *args, **kwargs))
-    call.add_done_callback(lambda _: places.release())
-    return await asyncio.shield(call)
+    loop = asyncio.get_running_loop()
+    threads = _threads_of.get(loop)
+    if threads is None:
+        threads = _threads_of[loop] = ThreadPoolExecutor(
+            _MAX_CALLS_AT_ONCE, thread_name_prefix="pybodn"
+        )
+    call = functools.partial(contextvars.copy_context().run, function, *args, **kwargs)
+    return await loop.run_in_executor(threads, call)
 
 
 class AsyncCollection:
@@ -136,9 +134,9 @@ class AsyncMemoryEngine:
     """``MemoryEngine`` for asyncio: open it with ``await AsyncMemoryEngine.sqlite(path)`` or
     ``await AsyncMemoryEngine.in_memory()``, and use it in ``async with``.
 
-    Each method does what the method of the same name of ``MemoryEngine`` does, in a thread of
-    asyncio's: a few calls at a time on one event loop, of all its engines together. A call
-    given up on, as on a timeout, still runs to its end, so a write may still land.
+    Each method does what the method of the same name of ``MemoryEngine`` does, in one of a few
+    threads the event loop has for all its engines. A call given up on, as on a timeout, once
+    begun still runs to its end, so a write may still land.
     """
 
     __slots__ = ("_engine",)
@@ -156,14 +154,12 @@ class AsyncMemoryEngine:
         embedder: Embedder | None = None,
     ) -> Self:
         """``MemoryEngine.sqlite()``, opened in a thread."""
-        return cls(
-            await asyncio.to_thread(MemoryEngine.sqlite, path, timeout=timeout, embedder=embedder)
-        )
+        return cls(await _in_thread(MemoryEngine.sqlite, path, timeout=timeout, embedder=embedder))
 
     @classmethod
     async def in_memory(cls, *, embedder: Embedder | None = None) -> Self:
         """``MemoryEngine.in_memory()``, opened in a thread."""
-        return cls(await asyncio.to_thread(MemoryEngine.in_memory, embedder=embedder))
+        return cls(await _in_thread(MemoryEngine.in_memory, embedder=embedder))
 
     def collection(self, namespace: str) -> AsyncCollection:
         """The records of ``namespace``, as ``MemoryEngine.collection()`` gives them."""
@@ -180,10 +176,10 @@ class AsyncMemoryEngine:
     async def close(self) -> None:
         """Close the storage. Safe to call again.
 
-        It does not wait for a free place, and once begun it runs to its end, even if given up
-        on. The store still waits for the call it is making.
+        It does not wait for a thread of the event loop's engines, and once begun it runs to its
+        end, even if given up on. The store still waits for the call it is making.
         """
-        await asyncio.shield(asyncio.to_thread(self._engine.close))
+        await asyncio.to_thread(self._engine.close)
 
     async def __aenter__(self) -> Self:
         self._engine.__enter__()
