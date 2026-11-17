@@ -24,6 +24,8 @@ MODEL = "fake-1"
 
 START = datetime(2026, 11, 13, 9, 55, 0, 123456, tzinfo=UTC)
 TICK = timedelta(seconds=1, microseconds=1)
+LATER = START + timedelta(hours=1)
+MICROSECOND = timedelta(microseconds=1)
 
 
 class TickingClock:
@@ -44,6 +46,16 @@ class TickingClock:
         return now
 
 
+class Clock:
+    """A clock the test sets by hand: every reading is the moment it was last set to."""
+
+    def __init__(self) -> None:
+        self.now = START
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
 def engine_on(store: Store, embedder: Embedder | None = None) -> MemoryEngine:
     """An engine on ``store``, as each process opens the same file. The store outlives it."""
     return MemoryEngine(store, clock=TickingClock(), embedder=embedder)
@@ -55,6 +67,12 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Store]:
     store = make_store(tmp_path)
     yield store
     store.close()
+
+
+@pytest.fixture
+def clock() -> Clock:
+    """A clock to set by hand, for a module whose engine reads it."""
+    return Clock()
 
 
 @pytest.fixture

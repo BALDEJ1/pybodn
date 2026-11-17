@@ -194,6 +194,21 @@ def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_touches_vectors(
         assert run_sql(path, "SELECT * FROM memory_vectors") == before
 
 
+@pytest.mark.parametrize("upgrade", UPGRADES.values(), ids=UPGRADES.keys())
+def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_looks_for_copies(
+    path: Path, upgrade: tuple[str, tuple[object, ...]]
+) -> None:
+    model = FakeModel()
+    with MemoryEngine.sqlite(path, embedder=Embedder("fake-1", model)) as engine:
+        # Arrange
+        run_sql(path, *upgrade)
+
+        # Act / Assert: the model is not paid for a text that would never be written
+        with pytest.raises(StorageError, match="restart"):
+            engine.collection("user:123").add("кава", dedupe=True)
+        assert model.calls == []
+
+
 # Both stores ------------------------------------------------------------------------------------
 
 VOCABULARY = "кава чай молоко арахіс алергія python вода сік мед цукор".split()

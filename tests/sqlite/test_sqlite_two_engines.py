@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pybodn import MemoryEngine
+from pybodn import MemoryEngine, NewMemory
 from pybodn.errors import ConcurrentUpdateError, RecordNotFoundError
 from tests.sqlite.support import SHORT_WAIT, THREADS, WAIT_SECONDS
 
@@ -107,4 +107,44 @@ def test_parallel_puts_from_two_engines_lose_nothing(path: Path) -> None:
         record = second.collection("user:123").get_by_key("counter")
         assert record is not None
         assert record.version == THREADS * CALLS
+        assert first.collection("user:123").count() == 1
+
+
+def test_a_text_one_engine_added_is_a_copy_for_the_other(path: Path) -> None:
+    with MemoryEngine.sqlite(path) as first, MemoryEngine.sqlite(path) as second:
+        # Arrange
+        mine, theirs = first.collection("user:123"), second.collection("user:123")
+        record = mine.add("Prefers Python")
+
+        # Act
+        again = theirs.add("Prefers Python", dedupe=True)
+        in_a_batch, new = theirs.add_many(
+            [NewMemory("Prefers Python"), NewMemory("Likes tea")], dedupe=True
+        )
+
+        # Assert
+        assert again == in_a_batch == record
+        assert mine.list() == [record, new]
+
+
+def test_parallel_adds_of_one_text_from_two_engines_write_it_once(path: Path) -> None:
+    # Arrange
+    start = threading.Barrier(THREADS, timeout=WAIT_SECONDS)
+    with (
+        MemoryEngine.sqlite(path, timeout=WAIT_SECONDS) as first,
+        MemoryEngine.sqlite(path, timeout=WAIT_SECONDS) as second,
+    ):
+
+        def add(engine: MemoryEngine) -> str:
+            notes = engine.collection("user:123")
+            start.wait()
+            return notes.add("Prefers Python", dedupe=True).id
+
+        # Act
+        with ThreadPoolExecutor(THREADS) as pool:
+            futures = [pool.submit(add, (first, second)[n % 2]) for n in range(THREADS)]
+        ids = {future.result() for future in futures}
+
+        # Assert
+        assert len(ids) == 1
         assert first.collection("user:123").count() == 1

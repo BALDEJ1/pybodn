@@ -16,6 +16,8 @@ ACTIONS: dict[str, Callable[[Collection], object]] = {
     "add": lambda notes: notes.add("Prefers Python"),
     "add_many": lambda notes: notes.add_many([NewMemory("Prefers Python")]),
     "add_many-of-nothing": lambda notes: notes.add_many([]),
+    "add-with-dedupe": lambda notes: notes.add("Prefers Python", dedupe=True),
+    "add_many-of-nothing-with-dedupe": lambda notes: notes.add_many([], dedupe=True),
     "put": lambda notes: notes.put("language", "Python"),
     "get": lambda notes: notes.get(MISSING_ID),
     "get_by_key": lambda notes: notes.get_by_key("language"),
@@ -68,7 +70,9 @@ def never_build(current: MemoryRecord | None) -> MemoryRecord:
 # A call that races close() gets past the engine's own check, so the store checks again.
 STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "get": lambda store: store.get("user:123", "id", MISSING_ID),
-    "insert": lambda store: store.insert([]),
+    "insert": lambda store: store.insert("user:123", []),
+    "insert-with-dedupe": lambda store: store.insert("user:123", [], dedupe=EVERYTHING),
+    "find_copies": lambda store: store.find_copies("user:123", [], where=EVERYTHING),
     "modify": lambda store: store.modify("user:123", "id", MISSING_ID, never_build),
     "delete": lambda store: store.delete("user:123", MISSING_ID),
     "purge_expired": lambda store: store.purge_expired(datetime.now(UTC), limit=10),

@@ -11,11 +11,9 @@ from pybodn import Collection, Embedder, MemoryEngine, MemoryRecord, NewMemory
 from pybodn._filter import Visibility
 from pybodn._storage.base import Store
 from pybodn.errors import DuplicateKeyError, RecordNotFoundError, ValidationError
-from tests.contract.conftest import START
+from tests.contract.conftest import LATER, MICROSECOND, START, Clock
 
 MISSING_ID = "0" * 32
-LATER = START + timedelta(hours=1)
-MICROSECOND = timedelta(microseconds=1)
 
 
 class Batch(NamedTuple):
@@ -23,21 +21,6 @@ class Batch(NamedTuple):
 
     now: datetime
     deleted: int
-
-
-class Clock:
-    """A clock the test sets by hand: every reading is the moment it was last set to."""
-
-    def __init__(self) -> None:
-        self.now = START
-
-    def __call__(self) -> datetime:
-        return self.now
-
-
-@pytest.fixture
-def clock() -> Clock:
-    return Clock()
 
 
 @pytest.fixture

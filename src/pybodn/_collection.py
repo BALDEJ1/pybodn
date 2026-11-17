@@ -13,12 +13,11 @@ from pybodn._filter import Filter, Filters, Visibility, checked
 from pybodn._mixing import mix
 from pybodn._models import JSONValue, MemoryRecord, NewMemory, SearchHit, SearchMode
 from pybodn._search import Term, query_terms
-from pybodn._storage.base import NO_VECTORS, Lookup, Store, Vector, ensure_open
+from pybodn._storage.base import NO_VECTORS, Lookup, Store, Vector, ensure_open, split_batch
 from pybodn._words import words
 from pybodn.errors import (
     ConcurrentUpdateError,
     ConfigurationError,
-    DuplicateKeyError,
     RecordNotFoundError,
     ValidationError,
 )
@@ -96,23 +95,36 @@ class Collection:
         """The namespace of every record in this collection."""
         return self._namespace
 
-    def add(self, content: str, **fields: Unpack[NewMemoryFields]) -> MemoryRecord:
-        """Add a record. The same as ``add_many([NewMemory(content, ...)])[0]``."""
+    def add(
+        self, content: str, *, dedupe: bool = False, **fields: Unpack[NewMemoryFields]
+    ) -> MemoryRecord:
+        """Add a record. The same as ``add_many([NewMemory(content, ...)], dedupe=...)[0]``."""
         ensure_open(self._store)
         validate.reject_unknown("add", fields, NewMemoryFields.__optional_keys__)
-        return self.add_many([NewMemory(content, **fields)])[0]
+        return self.add_many([NewMemory(content, **fields)], dedupe=dedupe)[0]
 
-    def add_many(self, memories: Iterable[NewMemory]) -> builtins.list[MemoryRecord]:
-        """Add every memory, or none if any of them fails. Returns them in the same order."""
+    def add_many(
+        self, memories: Iterable[NewMemory], *, dedupe: bool = False
+    ) -> builtins.list[MemoryRecord]:
+        """Add every memory, or none if any of them fails. Returns a record for each, in the
+        same order.
+
+        With ``dedupe=True``, a memory is not added if the namespace shows a record with the
+        same text and the same key, or both without one, or if an earlier memory of the batch
+        has them. That record comes back in its place, as stored: the memory's other fields are
+        not applied. Texts must match in every character. Archived and expired records are no
+        copies, but still hold their keys.
+        """
         ensure_open(self._store)
+        checked_dedupe = validate.flag("dedupe", dedupe)
         makers = [_prepare(self._namespace, memory) for memory in validate.memories(memories)]
         now = self._clock()
         records = [
             make(id=uuid4().hex, created_at=now, updated_at=now, version=1) for make in makers
         ]
-        _reject_repeated_keys(records)
-        self._store.insert(records, vectors=self._vectors_of(records))
-        return records
+        visible = checked("add_many", {}, now=now) if checked_dedupe else None  # where copies are
+        vectors = self._vectors_of(records, visible)
+        return self._store.insert(self._namespace, records, vectors=vectors, dedupe=visible)
 
     def put(self, key: str, content: str, **fields: Unpack[MemoryFields]) -> MemoryRecord:
         """Create the record with ``key``, or replace every field of it.
@@ -327,12 +339,25 @@ class Collection:
         by_meaning = self._store.search_vectors(self._namespace, vector, where=where, limit=each)
         return mix(by_words, by_meaning, limit=limit)
 
-    def _vectors_of(self, records: Sequence[MemoryRecord]) -> Mapping[str, Vector]:
-        """The vector of each record's text, by the record's id; none without a model."""
+    def _vectors_of(
+        self, records: Sequence[MemoryRecord], dedupe: Filter | None
+    ) -> Mapping[str, Vector]:
+        """The vector of each record a batch will write, by the record's id; none without a model.
+
+        With ``dedupe``, a record whose copy is among the records it keeps gets none. Copies are
+        looked for here, before the model, so that it is asked only about new texts; the store
+        looks again as it writes, since another writer may add or hide one meanwhile.
+        """
         if self._vectorize is None:
             return NO_VECTORS
-        vectors = self._vectorize([record.content for record in records])
-        return {record.id: vector for record, vector in zip(records, vectors, strict=True)}
+        copies = (
+            None
+            if dedupe is None
+            else self._store.find_copies(self._namespace, records, where=dedupe)
+        )
+        _, written = split_batch(records, copies)
+        vectors = self._vectorize([record.content for record in written])
+        return {record.id: vector for record, vector in zip(written, vectors, strict=True)}
 
     def _vector_for(self, by: Lookup, value: str, text: str, *, creates: bool) -> Vector | None:
         """The vector of ``text`` for a write over the record ``by`` finds, if it needs one: there
@@ -358,16 +383,6 @@ def _prepare(namespace: str, memory: NewMemory) -> partial[MemoryRecord]:
     a version."""
     checked = {name: check(getattr(memory, name)) for name, check in _FIELD_CHECKS.items()}
     return partial(MemoryRecord, namespace=namespace, archived_at=None, **checked)
-
-
-def _reject_repeated_keys(records: Iterable[MemoryRecord]) -> None:
-    """Raise ``DuplicateKeyError`` if two records of one batch share a key."""
-    seen: set[str] = set()
-    for record in records:
-        if record.key in seen:
-            raise DuplicateKeyError(f"key {record.key!r} is repeated within the batch")
-        if record.key is not None:
-            seen.add(record.key)
 
 
 def _check_changes(changes: Mapping[str, object]) -> dict[str, Any]:

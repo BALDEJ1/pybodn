@@ -118,6 +118,11 @@ def from_get(notes: Collection) -> MemoryRecord | None:
     return notes.get(record.id)
 
 
+def from_add_with_dedupe(notes: Collection) -> MemoryRecord | None:
+    notes.add("Python", key="language", metadata={"list": [1]})
+    return notes.add("Python", key="language", dedupe=True)
+
+
 def from_get_by_key(notes: Collection) -> MemoryRecord | None:
     notes.add("Python", key="language", metadata={"list": [1]})
     return notes.get_by_key("language")
@@ -148,6 +153,7 @@ def from_update_of_content(notes: Collection) -> MemoryRecord | None:
     [
         from_add,
         from_add_many,
+        from_add_with_dedupe,
         from_put,
         from_get,
         from_get_by_key,

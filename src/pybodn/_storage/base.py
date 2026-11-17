@@ -28,6 +28,9 @@ type Lookup = Literal["id", "key"]
 # Turns the current record, or ``None`` if there is none, into the record to write.
 type Build = Callable[[MemoryRecord | None], MemoryRecord]
 
+# What a record shares with its copies: its text and its key, or ``None`` for none.
+type TextAndKey = tuple[str, str | None]
+
 # Each number of a stored vector is a float of this many bytes, in little-endian order.
 FLOAT_BYTES = 4
 
@@ -73,14 +76,28 @@ class Store(Protocol):
     def get(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         """The record of ``namespace`` whose ``by`` equals ``value``, or ``None``."""
 
-    def insert(
-        self, records: Sequence[MemoryRecord], *, vectors: Mapping[str, Vector] = NO_VECTORS
-    ) -> None:
-        """Write every record, with the vector ``vectors`` holds under its id, or none of them.
+    def find_copies(
+        self, namespace: str, records: Sequence[MemoryRecord], *, where: Filter
+    ) -> dict[TextAndKey, MemoryRecord]:
+        """For each text and key of ``records``, the first record added to ``namespace`` that
+        ``where`` keeps and holds them, if there is one."""
 
-        A key already used in the namespace raises ``DuplicateKeyError``, and a vector of
-        another length than its model's stored vectors ``EmbeddingError``. The caller sees to it
-        that ``records`` never repeat a key among themselves.
+    def insert(
+        self,
+        namespace: str,
+        records: Sequence[MemoryRecord],
+        *,
+        vectors: Mapping[str, Vector] = NO_VECTORS,
+        dedupe: Filter | None = None,
+    ) -> builtins.list[MemoryRecord]:
+        """Write the records of ``namespace``, each with the vector ``vectors`` holds under its
+        id, or none of them, and return a record for each, in the same order.
+
+        Without ``dedupe``, every record is written and returned. With it, a record that has a
+        copy, as ``split_batch`` finds it among the records ``dedupe`` keeps, is not written, and
+        its copy is returned in its place. A key that the records written repeat among
+        themselves, or that the namespace already holds, raises ``DuplicateKeyError``, and a
+        vector of another length than its model's stored vectors ``EmbeddingError``.
         """
 
     def modify(
@@ -200,6 +217,41 @@ def check_sizes(vectors: Iterable[Vector], stored_size: Callable[[str], int | No
             sizes[vector.model] = stored_size(vector.model)
         check_size(vector, sizes[vector.model])
         sizes[vector.model] = len(vector.data)
+
+
+def text_and_key(record: MemoryRecord) -> TextAndKey:
+    """What ``record`` shares with its copies."""
+    return record.content, record.key
+
+
+def split_batch(
+    records: Sequence[MemoryRecord], copies: Mapping[TextAndKey, MemoryRecord] | None
+) -> tuple[builtins.list[MemoryRecord], builtins.list[MemoryRecord]]:
+    """The record a batch returns for each of ``records``, and the records it writes.
+
+    Without ``copies``, it writes and returns every record. With them, a record that has a copy
+    is not written, and its copy is returned in its place: the one ``copies`` holds for its text
+    and key, else the first record of the batch with them. Raises ``DuplicateKeyError`` if two
+    records it writes share a key.
+    """
+    if copies is None:
+        returned = [*records]
+    else:
+        firsts = dict(copies)
+        returned = [firsts.setdefault(text_and_key(record), record) for record in records]
+    written = [record for record, kept in zip(records, returned, strict=True) if kept is record]
+    _reject_repeated_keys(written)
+    return returned, written
+
+
+def _reject_repeated_keys(records: Iterable[MemoryRecord]) -> None:
+    """Raise ``DuplicateKeyError`` if two of ``records`` share a key."""
+    seen: set[str] = set()
+    for record in records:
+        if record.key in seen:
+            raise DuplicateKeyError(f"key {record.key!r} is repeated within the batch")
+        if record.key is not None:
+            seen.add(record.key)
 
 
 def reject_stored_keys(

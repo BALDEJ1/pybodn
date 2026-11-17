@@ -19,12 +19,15 @@ from pybodn._storage.base import (
     Build,
     Lookup,
     MissingVector,
+    TextAndKey,
     Unchanged,
     Vector,
     check_size,
     check_sizes,
     ensure_open,
     reject_stored_keys,
+    split_batch,
+    text_and_key,
     vector_after,
 )
 from pybodn._words import WORD_RULES, words
@@ -158,6 +161,26 @@ _RECORDS_AT = (
     " WHERE seq IN (SELECT value FROM json_each(?))"
 )
 
+# The copies of a batch: the first record added of each text and key, among the records of a
+# namespace that hold a text of the batch, and a key of it or none, and that the filter keeps.
+# The batch's texts and keys come as JSON, which older SQLite, such as 3.34, cuts at a NUL
+# character: a batch that holds one compares them by the hex digits of their UTF-8 bytes
+# instead, which takes longer, since every record's text is turned into them.
+_COPIES = (
+    f"SELECT {', '.join(_COLUMNS)} FROM memories WHERE seq IN (SELECT min(seq) FROM memories"  # noqa: S608
+    " WHERE namespace = ?"
+)
+_AS_WRITTEN = (
+    " AND content IN (SELECT value FROM json_each(?))"
+    " AND (memory_key IS NULL OR memory_key IN (SELECT value FROM json_each(?)))"
+)
+_AS_BYTES = (
+    " AND hex(content) IN (SELECT value FROM json_each(?))"
+    " AND (memory_key IS NULL OR hex(memory_key) IN (SELECT value FROM json_each(?)))"
+)
+_FIRST_OF_EACH = " GROUP BY content, memory_key)"
+_NUL = "\x00"
+
 # A purge: the seqs of the records that have expired, through the expiry index, then their words,
 # vectors and rows, each found by a seq of that list.
 _EXPIRED_SEQS = f"SELECT seq FROM memories WHERE {_EXPIRED} LIMIT ?"  # noqa: S608
@@ -221,21 +244,38 @@ class SQLiteStore:
             with self._up_to_date(_BEGIN_READ):
                 return self._find(namespace, by, value)
 
+    def find_copies(
+        self, namespace: str, records: Sequence[MemoryRecord], *, where: Filter
+    ) -> dict[TextAndKey, MemoryRecord]:
+        with self._lock:
+            ensure_open(self)
+            with self._up_to_date(_BEGIN_READ):
+                return self._copies(namespace, records, where)
+
     def insert(
-        self, records: Sequence[MemoryRecord], *, vectors: Mapping[str, Vector] = NO_VECTORS
-    ) -> None:
-        rows = [_row(record) for record in records]
+        self,
+        namespace: str,
+        records: Sequence[MemoryRecord],
+        *,
+        vectors: Mapping[str, Vector] = NO_VECTORS,
+        dedupe: Filter | None = None,
+    ) -> builtins.list[MemoryRecord]:
+        rows = {record.id: _row(record) for record in records}
+        # The vector of a record not written finds no row to go with.
         given = [(vector.model, vector.data, record_id) for record_id, vector in vectors.items()]
         with self._lock:
             ensure_open(self)
-            if not rows:
-                return
+            if not records:
+                return []
             with self._up_to_date(_BEGIN_WRITE):
-                reject_stored_keys(records, self._is_key_stored)
+                copies = None if dedupe is None else self._copies(namespace, records, dedupe)
+                returned, written = split_batch(records, copies)
+                reject_stored_keys(written, self._is_key_stored)
                 check_sizes(vectors.values(), self._vector_size)
-                self._connection.executemany(_INSERT, rows)
-                self._connection.executemany(_ADD_WORDS, [(record.id,) for record in records])
+                self._connection.executemany(_INSERT, [rows[record.id] for record in written])
+                self._connection.executemany(_ADD_WORDS, [(record.id,) for record in written])
                 self._connection.executemany(_SET_VECTOR, given)
+        return returned
 
     def modify(
         self, namespace: str, by: Lookup, value: str, build: Build, *, vector: Vector | None = None
@@ -381,6 +421,26 @@ class SQLiteStore:
     def _find(self, namespace: str, by: Lookup, value: str) -> MemoryRecord | None:
         rows = self._connection.execute(_SELECT_BY[by], (namespace, value)).fetchall()
         return _record(rows[0]) if rows else None
+
+    def _copies(
+        self, namespace: str, records: Sequence[MemoryRecord], where: Filter
+    ) -> dict[TextAndKey, MemoryRecord]:
+        """``find_copies``, within a transaction.
+
+        The query finds the first record of each text and key among those that hold a text of
+        ``records`` and a key of them or none, so only the pairs asked for are kept here.
+        """
+        texts = [record.content for record in records]
+        keys = [record.key for record in records if record.key is not None]
+        as_bytes = any(_NUL in value for value in (*texts, *keys))
+        compared = _AS_BYTES if as_bytes else _AS_WRITTEN
+        conditions, values = _conditions(where)
+        sql = f"{_COPIES}{compared}{conditions}{_FIRST_OF_EACH}"  # noqa: S608 - fixed pieces only
+        given = (_json_of(texts, as_bytes=as_bytes), _json_of(keys, as_bytes=as_bytes))
+        rows = self._connection.execute(sql, (namespace, *given, *values)).fetchall()
+        wanted = {text_and_key(record) for record in records}
+        found = (_record(row) for row in rows)
+        return {text_and_key(record): record for record in found if text_and_key(record) in wanted}
 
     def _is_key_stored(self, namespace: str, key: str) -> bool:
         return bool(self._connection.execute(_KEY_USED, (namespace, key)).fetchall())
@@ -625,6 +685,12 @@ def _missing(row: sqlite3.Row) -> MissingVector:
     return MissingVector(
         seq=row["seq"], namespace=row["namespace"], id=row["id"], text=row["content"]
     )
+
+
+def _json_of(texts: Sequence[str], *, as_bytes: bool) -> str:
+    """``texts`` as a JSON list, each as written, or as SQLite's ``hex()`` shows its UTF-8
+    bytes."""
+    return json.dumps([text.encode().hex().upper() for text in texts] if as_bytes else texts)
 
 
 def _json(value: object) -> str:
