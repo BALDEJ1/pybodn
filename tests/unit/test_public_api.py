@@ -7,6 +7,8 @@ import pybodn
 from pybodn import Collection, Embedder, MemoryEngine
 
 PUBLIC_NAMES = [
+    "AsyncCollection",
+    "AsyncMemoryEngine",
     "Collection",
     "Embedder",
     "JSONValue",
