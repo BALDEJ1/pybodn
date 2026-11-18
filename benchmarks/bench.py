@@ -10,6 +10,7 @@ as the most common one, as words are in real text. Vectors are random: a search 
 every vector whatever its numbers, so its time does not depend on them.
 """
 
+import asyncio
 import platform
 import random
 import sqlite3
@@ -17,13 +18,22 @@ import tempfile
 import time
 import tracemalloc
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from itertools import accumulate, batched
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 
-from pybodn import Collection, Embedder, MemoryEngine, NewMemory, __version__
+from pybodn import (
+    AsyncCollection,
+    AsyncMemoryEngine,
+    Collection,
+    Embedder,
+    MemoryEngine,
+    NewMemory,
+    __version__,
+)
 from tests.sqlite.support import make_old_file
 
 RECORDS = (10_000, 100_000)
@@ -31,7 +41,11 @@ DIMENSIONS = (384, 1_536, 3_072)
 MAIN_DIMENSIONS = 1_536  # the vectors of the mixed search, the memory and the file size quoted
 NAMESPACES = 1_000  # in the file of many namespaces, each with
 PER_NAMESPACE = 1_000
-UPGRADED = 100_000  # records in the file from pybodn 0.1.0
+UPGRADED = 100_000  # records in each file from an older pybodn
+OLDER = {"0.1.0": 1, "0.2.0": 2}  # each older pybodn, with the schema version of its files
+HIDDEN = 100_000  # records in the file where every other one has expired
+EXPIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+ASYNC_CALLS = 1_000  # calls in each run that measures what awaiting a call adds
 VOCABULARY = 50_000
 WORDS_PER_RECORD = (5, 25)
 BATCH = 1_000  # records added at a time
@@ -73,6 +87,7 @@ class Measured(NamedTuple):
     common: float
     meaning: float
     mixed: float
+    dedupe: float  # an add with dedupe=True of a text the namespace does not hold
     memory: int
     file_size: int
 
@@ -99,13 +114,13 @@ def filled(engine: MemoryEngine, corpus: Corpus, namespace: str, records: int) -
     return notes
 
 
-def fastest(search: Callable[[], object]) -> float:
-    """The shortest of ``RUNS`` runs of ``search``, in seconds: other programs on the machine
+def fastest(action: Callable[[], object]) -> float:
+    """The shortest of ``RUNS`` runs of ``action``, in seconds: other programs on the machine
     only ever slow a run down, as Python's timeit documentation explains."""
     timings = []
     for _ in range(RUNS):
         started = time.perf_counter()
-        search()
+        action()
         timings.append(time.perf_counter() - started)
     return min(timings)
 
@@ -129,9 +144,11 @@ def one_namespace(folder: Path, corpus: Corpus, records: int, dimensions: int) -
         meaning = fastest(lambda: notes.search(corpus.common, limit=LIMIT, mode="vector"))
         mixed = fastest(lambda: notes.search(corpus.common, limit=LIMIT))
         memory = peak_memory(lambda: notes.search(corpus.common, limit=LIMIT, mode="vector"))
+        new = corpus.texts(RUNS, seed=-1)
+        dedupe = fastest(lambda: notes.add(next(new), dedupe=True))
     file_size = path.stat().st_size  # once closed, so that the write-ahead log is in the file
     path.unlink()
-    return Measured(rare, common, meaning, mixed, memory, file_size)
+    return Measured(rare, common, meaning, mixed, dedupe, memory, file_size)
 
 
 def many_namespaces(folder: Path, corpus: Corpus) -> tuple[float, float]:
@@ -149,10 +166,50 @@ def many_namespaces(folder: Path, corpus: Corpus) -> tuple[float, float]:
     return found
 
 
-def first_open(folder: Path, corpus: Corpus) -> float:
-    """The first open of a file that pybodn 0.1.0 wrote, which indexes every record."""
-    path = folder / "0.1.0.db"
-    make_old_file(path, 1, lambda engine: fill(engine.collection("user:1"), corpus.texts(UPGRADED)))
+def hidden(folder: Path, corpus: Corpus) -> tuple[float, float, float]:
+    """In one namespace of ``HIDDEN`` records, every other one expired: ``count()``, the first
+    page of ``list()``, and ``purge_expired()``, which runs once."""
+    path = folder / "hidden.db"
+    with MemoryEngine.sqlite(path) as engine:
+        notes = engine.collection("user:1")
+        for batch in batched(enumerate(corpus.texts(HIDDEN)), BATCH):
+            notes.add_many(
+                NewMemory(text, expires_at=EXPIRED_AT if number % 2 else None)
+                for number, text in batch
+            )
+        count = fastest(notes.count)
+        page = fastest(lambda: notes.list(limit=LIMIT))
+        started = time.perf_counter()
+        engine.purge_expired()
+        purge = time.perf_counter() - started
+    path.unlink()
+    return count, page, purge
+
+
+def awaiting() -> float:
+    """How much longer ``count()`` takes awaited than called straight, in seconds per call."""
+    with MemoryEngine.in_memory() as engine:
+        notes = engine.collection("user:1")
+        straight = fastest(lambda: [notes.count() for _ in range(ASYNC_CALLS)])
+
+    async def counts(collection: AsyncCollection) -> None:
+        for _ in range(ASYNC_CALLS):
+            await collection.count()
+
+    with asyncio.Runner() as runner:
+        twin = runner.run(AsyncMemoryEngine.in_memory())
+        collection = twin.collection("user:1")
+        awaited = fastest(lambda: runner.run(counts(collection)))
+        runner.run(twin.close())
+    return (awaited - straight) / ASYNC_CALLS
+
+
+def first_open(folder: Path, corpus: Corpus, version: int) -> float:
+    """The first open of a file at schema ``version``, which brings it up to date."""
+    path = folder / f"version-{version}.db"
+    make_old_file(
+        path, version, lambda engine: fill(engine.collection("user:1"), corpus.texts(UPGRADED))
+    )
     started = time.perf_counter()
     engine = MemoryEngine.sqlite(path)
     opened = time.perf_counter() - started
@@ -187,7 +244,11 @@ def main() -> None:
             for dimensions in DIMENSIONS
         }
         rare, common = many_namespaces(folder, corpus)
-        opened = first_open(folder, corpus)
+        count, page, purge = hidden(folder, corpus)
+        opened = {
+            release: first_open(folder, corpus, version) for release, version in OLDER.items()
+        }
+    awaited = awaiting()
 
     chosen = {records: found[records, MAIN_DIMENSIONS] for records in RECORDS}
     rows = [
@@ -211,6 +272,10 @@ def main() -> None:
     for label, times in rows:
         print(f"| {label} | {' | '.join(map(duration, times))} |")
     memory = " and ".join(f"{size(chosen[records].memory)} at {records:,}" for records in RECORDS)
+    dedupe = " and ".join(
+        f"{duration(chosen[records].dedupe)} at {records:,}" for records in RECORDS
+    )
+    upgrades = ", ".join(f"from {release} {duration(opened[release])}" for release in OLDER)
     print(
         f"\nMemory of a search by meaning, vectors of {MAIN_DIMENSIONS:,} numbers: {memory}."
         f"\nFile of {RECORDS[-1]:,} records with vectors of {MAIN_DIMENSIONS:,} numbers:"
@@ -218,7 +283,12 @@ def main() -> None:
         f"\nSearch by words in one namespace of a file of {NAMESPACES * PER_NAMESPACE:,} records"
         f" in {NAMESPACES:,} namespaces: {duration(rare)} for a word that one record holds,"
         f" {duration(common)} for the {COMMON_WORDS} most common words."
-        f"\nFirst open of a file from pybodn 0.1.0: {duration(opened)} for {UPGRADED:,} records."
+        f"\nAdd of a new text with dedupe=True, in one namespace: {dedupe}."
+        f"\nOne namespace of {HIDDEN:,} records, every other one expired:"
+        f" count() {duration(count)}, the first page of list() {duration(page)},"
+        f" purge_expired() of {HIDDEN // 2:,} records {duration(purge)}."
+        f"\nFirst open of a file of {UPGRADED:,} records from an older pybodn: {upgrades}."
+        f"\nAn awaited call takes {awaited * 1e6:.0f} µs longer than the same call straight."
     )
 
 

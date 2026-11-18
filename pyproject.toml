@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "pybodn"
 version = "0.2.0"
-description = "A foundational memory engine for intelligent systems."
+description = "Memory for AI agents in a single file: no server, no LLM calls, search by words and by meaning."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -64,7 +64,7 @@ source_pkgs = ["pybodn"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 100
 show_missing = true
 
 [dependency-groups]

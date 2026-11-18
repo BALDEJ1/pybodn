@@ -1,10 +1,23 @@
 # PyBodn
 
-PyBodn stores memories for Python applications and AI agents: texts with a namespace, an optional
-key, JSON metadata, tags and an importance score. It finds them again by words and, with an
-embedding model of your own, by meaning. It keeps them in memory or in an SQLite file that
-several threads and processes can share. Its core needs nothing outside the Python standard
-library, and it does not tie you to an LLM, an embedding provider or a database server.
+Memory for AI agents in a single file. PyBodn keeps what your agent or app should remember:
+texts with a namespace, an optional key, JSON metadata, tags and an importance score. It finds
+them again by words and, with an embedding model of your own, by meaning.
+
+- **Nothing to run.** The memories live in one SQLite file, or in memory, inside your program:
+  no server and no vector database to set up.
+- **No LLM inside.** It stores exactly what you give it, skips copies if you ask, and never asks a
+  model what to keep. The only model it calls is the embedding model you give it.
+- **Words and meaning.** Search by words knows the forms of Ukrainian, Russian and English words.
+  Add an embedding model, and it searches by meaning too and mixes the two.
+- **Safe to share.** Several threads and processes can use one file at once, every change is in
+  the file before the call returns, and asyncio programs await the same calls.
+- **Forgets on purpose.** Records can expire, or be archived until you bring them back.
+- **Small core.** Nothing outside the Python standard library; search by meaning adds NumPy.
+
+It suits local agents, desktop and command-line apps, prototypes, and data that should stay on
+your machine. It is not made for one memory shared by many servers, or for search by meaning
+over millions of records, which reads every vector: see Speed and size.
 
 > **Status: alpha.** The API may still change between 0.x releases.
 
@@ -39,6 +52,27 @@ with MemoryEngine.sqlite("memory.db") as engine:
 The records stay in `memory.db` after the program ends. Every example below runs on its own in
 an empty folder.
 
+An agent remembers from one run to the next by opening the same file each time:
+
+```python
+from pybodn import MemoryEngine
+
+
+def remember(fact: str) -> None:
+    with MemoryEngine.sqlite("agent.db") as engine:
+        engine.collection("agent:assistant").add(fact, dedupe=True)
+
+
+def recall(question: str) -> list[str]:
+    with MemoryEngine.sqlite("agent.db") as engine:
+        hits = engine.collection("agent:assistant").search(question, limit=3)
+        return [hit.record.content for hit in hits]
+
+
+remember("The user's name is Olena")  # one run of the agent
+print(recall("What is my name?"))  # a later run, after a restart: ["The user's name is Olena"]
+```
+
 ## Engines
 
 An engine owns the storage. Create one with a factory and use it in `with`, which closes it at
@@ -66,6 +100,9 @@ never waits for another process.
 or a conversation. Namespaces never see each other's records, and the same key in two
 namespaces names two different records. A collection holds no records itself, so getting one is
 cheap.
+
+Namespaces share one thing: the word counts that rank a search by words, as By words explains.
+To keep clients fully apart, give each one a file of its own.
 
 ```python
 from pybodn import MemoryEngine
@@ -100,7 +137,9 @@ copy, never what is stored.
 | `source` | `str \| None` | `None` | where the memory came from, as free text |
 | `created_at` | `datetime` | now | in UTC; never changes |
 | `updated_at` | `datetime` | now | in UTC; set again by every change |
-| `version` | `int` | `1` | grows by one with every `put` or `update` of the record |
+| `version` | `int` | `1` | grows by one with every change of the record |
+| `expires_at` | `datetime \| None` | `None` | in UTC; from this moment on the record is hidden |
+| `archived_at` | `datetime \| None` | `None` | in UTC; when `archive` hid the record, or `None` |
 
 ## Operations
 
@@ -145,10 +184,35 @@ with MemoryEngine.in_memory() as engine:
     print(notes.count())  # 3
 ```
 
+### Skip copies: `dedupe=True`
+
+`add(..., dedupe=True)` and `add_many(..., dedupe=True)` skip a memory when the namespace shows a
+record with the same text and the same key, or both without a key, and return the first such
+record in its place, as stored: the memory's other fields are not applied. Texts must match in
+every character. Archived and expired records are not copies, though they still hold their
+keys. In one `add_many`, a memory that repeats an earlier one gets that one's record. Two writers
+adding the same text at once leave one record. With an embedding model, only new texts go to
+it.
+
+```python
+from pybodn import MemoryEngine, NewMemory
+
+with MemoryEngine.in_memory() as engine:
+    notes = engine.collection("user:123")
+    first = notes.add("Allergic to peanuts", tags=["health"])
+
+    again = notes.add("Allergic to peanuts", tags=["food"], dedupe=True)
+    print(again == first, again.tags)  # True ('health',)
+
+    added = notes.add_many([NewMemory("Lives in Kyiv"), NewMemory("Lives in Kyiv")], dedupe=True)
+    print(added[0] == added[1], notes.count())  # True 2
+```
+
 ### Read: `get`, `get_by_key`, `list` and `count`
 
-`get(id)` and `get_by_key(key)` return the record, or `None` if there is none. `list()` returns
-every record in the order they were added; `put` and `update` keep a record in its place.
+`get(id)` and `get_by_key(key)` return the record, or `None` if there is none or it is hidden.
+`list()` returns every record in the order they were added; `put` and `update` keep a record in
+its place.
 `list(limit=..., offset=...)` returns one page of that list, and a page past the end is empty.
 `count()` returns the number of records.
 
@@ -179,6 +243,9 @@ the records kept.
 | `min_importance` | has at least this importance |
 | `created_since` | was created at this moment or after it, a `datetime` with a time zone |
 | `created_before` | was created before this moment, a `datetime` with a time zone |
+
+Hidden records are left out unless `include_archived=True` or `include_expired=True` asks for
+them, as Hide below describes. `get` and `get_by_key` take these two as well.
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -258,6 +325,46 @@ with MemoryEngine.in_memory() as engine:
     notes.add("Prefers Rust", key="language")  # the key is free again
 ```
 
+### Hide: `archive`, `restore` and `expires_at`
+
+A hidden record stays stored, but reads leave it out. `archive(id)` hides a record until
+`restore(id)` brings it back; both return the record and raise `RecordNotFoundError` if there is
+none. `expires_at`, a `datetime` with a time zone that `add`, `add_many`, `put` and `update` take,
+hides a record from that moment on, and `update(id, expires_at=None)` clears it.
+
+- `get`, `get_by_key`, `list`, `count` and `search` leave hidden records out unless
+  `include_archived=True` or `include_expired=True` asks for them.
+- `update`, `put`, `delete`, `archive` and `restore` still reach them.
+- A hidden record keeps its key: `add` with that key raises `DuplicateKeyError`, and `put`
+  replaces the record with every field from the call, so it is no longer archived.
+- `update` leaves a record archived or not as it was. `archive` and `restore` change `version`
+  and `updated_at` only when they change the record.
+- Hidden records still count in the scores of a search by words, and `embed_missing()` gives
+  them vectors too.
+
+`engine.purge_expired()` deletes every expired record, in every namespace, and returns how many.
+It deletes a thousand at a time, each batch at once, and goes by the moment it began. Archived
+records stay until you delete them.
+
+```python
+from datetime import UTC, datetime, timedelta
+
+from pybodn import MemoryEngine
+
+with MemoryEngine.in_memory() as engine:
+    notes = engine.collection("user:123")
+    old = notes.add("Uses Python 3.11")
+    notes.archive(old.id)
+    notes.add("Is in Lviv this week", expires_at=datetime.now(UTC) + timedelta(days=7))
+    notes.add("Was in Odesa last week", expires_at=datetime.now(UTC) - timedelta(days=1))
+
+    print([record.content for record in notes.list()])  # ['Is in Lviv this week']
+    print(notes.count(include_archived=True, include_expired=True))  # 3
+    print(notes.get(old.id))  # None
+    print(notes.restore(old.id).content)  # Uses Python 3.11
+    print(engine.purge_expired())  # 1
+```
+
 ## Search
 
 `search(query, *, limit=10, mode="auto", **filters)` returns the records that best match
@@ -281,7 +388,7 @@ A record matches if it holds any word of the query.
   finds "алергія", and "projects" finds "project". A longer word with no known ending finds the
   words that start with it: "лікар" finds "лікаря".
 - A word of three letters or fewer, or a number, finds only itself: "про" does not find
-  "проєкт", nor "100" find "1000".
+  "проєкт", nor does "100" find "1000".
 - Forms that change inside the word, such as "рік" and "року" or "run" and "running", are not
   found, and a short start may find another word: "this" finds "thing".
 - Accents on Latin letters count: "cafe" does not find "café".
@@ -403,12 +510,12 @@ fastest of five runs.
 
 | Search | 10,000 records | 100,000 records |
 |---|---|---|
-| By words: a word that one record holds | 0.2 ms | 1.3 ms |
-| By words: the five most common words | 8.3 ms | 84 ms |
-| By meaning: vectors of 384 numbers | 12 ms | 122 ms |
-| By meaning: vectors of 1,536 numbers | 32 ms | 315 ms |
-| By meaning: vectors of 3,072 numbers | 54 ms | 571 ms |
-| Mixed: 1,536 numbers and the five most common words | 41 ms | 412 ms |
+| By words: a word that one record holds | 0.2 ms | 1.4 ms |
+| By words: the five most common words | 8.6 ms | 84 ms |
+| By meaning: vectors of 384 numbers | 12 ms | 117 ms |
+| By meaning: vectors of 1,536 numbers | 30 ms | 298 ms |
+| By meaning: vectors of 3,072 numbers | 50 ms | 467 ms |
+| Mixed: 1,536 numbers and the five most common words | 39 ms | 380 ms |
 
 - Search by words reads only the records that hold a word of the query, so a rare word is found
   at once and a common one takes longer.
@@ -420,10 +527,18 @@ fastest of five runs.
 - A search holds its engine's lock while it runs, so the engine's other calls wait for it; other
   engines and processes do not.
 - A vector takes 4 bytes per number, so vectors make most of a file: 100,000 records with vectors
-  of 1,536 numbers take 902 MB.
+  of 1,536 numbers take 903 MB.
 - The word index is one for the whole file, so a common word takes longer the more records the
   file holds: in a file of 1,000,000 records in 1,000 namespaces, a search in one namespace
-  takes 0.1 ms for a word that one record holds, and 122 ms for the five most common words.
+  takes 0.1 ms for a word that one record holds, and 119 ms for the five most common words.
+- `add` with `dedupe=True` looks for copies among the namespace's records without an index, so
+  it takes longer the larger the namespace: with an embedding model, 2.7 ms at 10,000 records
+  and 27 ms at 100,000.
+- Hidden records cost reads little: in a namespace of 100,000 records, every other one expired,
+  `count()` takes 3.6 ms and the first page of `list()` 0.1 ms. `purge_expired()` deletes the
+  50,000 expired ones in 1.3 s.
+- An awaited call takes about 30 µs longer than the same call made straight: the time to hand it
+  to a thread and back.
 
 ## Threads and processes
 
@@ -455,6 +570,40 @@ with MemoryEngine.in_memory() as engine:
         latest = notes.get(record.id)  # read the record again and decide what to do
 ```
 
+## Async
+
+`AsyncMemoryEngine` and `AsyncCollection` are the engine and the collection for asyncio. Open an
+engine with `await AsyncMemoryEngine.sqlite(path)` or `await AsyncMemoryEngine.in_memory()`, use
+it in `async with`, and await every method but `collection()`. Each method takes the arguments of
+the method of the same name above, and gives the same results and errors. It runs that method in
+a thread, so the event loop runs on while a call waits for the file's lock or the embedding
+model. Context variables reach the thread.
+
+- Each event loop has four threads of its own for the calls of all its engines, so that calls
+  waiting for the file do not take the threads the rest of the program shares. Further calls wait
+  their turn.
+- A call given up on, as on a timeout, once begun still runs to its end, so a write may still
+  land.
+- `close()` does not wait for a free thread.
+
+```python
+import asyncio
+
+from pybodn import AsyncMemoryEngine
+
+
+async def main() -> None:
+    async with await AsyncMemoryEngine.sqlite("memory.db") as engine:
+        notes = engine.collection("user:123")
+        await asyncio.gather(notes.add("Prefers short answers"), notes.add("Lives in Kyiv"))
+
+        print(await notes.count())  # 2
+        print((await notes.search("answers"))[0].record.content)  # Prefers short answers
+
+
+asyncio.run(main())
+```
+
 ## Errors
 
 Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
@@ -462,8 +611,8 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | Error | Raised when |
 |---|---|
 | `ValidationError` | an argument is invalid; the message names it. Also a `ValueError`. |
-| `DuplicateKeyError` | `add` or `add_many` uses a key the namespace already has, or one batch repeats a key |
-| `RecordNotFoundError` | `update` gets an id with no record. Also a `LookupError`. |
+| `DuplicateKeyError` | `add` or `add_many` uses a key the namespace already has, even a hidden record's, or one batch repeats a key |
+| `RecordNotFoundError` | `update`, `archive` or `restore` gets an id with no record. Also a `LookupError`. |
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
 | `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
 | `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
@@ -491,6 +640,9 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
   are NaN and infinity. It holds at most 100 levels, 1,000,000 values and 16 MB of text, and its
   integers fit in 64 bits, as SQLite stores them.
 - A record keeps a copy of the `metadata` you pass: changing your dict later changes nothing.
+- `expires_at` is `None` or a `datetime` with a time zone, within years 1 to 9999 in UTC, and
+  `include_archived` and `include_expired` are `True`, `False` or `None`. `dedupe` is `True` or
+  `False`.
 - `limit` and `expected_version` are `None` or an integer from 1, and `offset` is an integer
   from 0. None of them can exceed 2**63 - 1, the largest integer SQLite stores.
 - A search's `query` is a string, of at most 100 different words when it searches by words. Its
@@ -516,8 +668,8 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
   the common Linux distributions have; the oldest tested is SQLite 3.34. Without them,
   `StorageError` says what is missing and the file stays as it was.
 - The file is marked as pybodn's and carries a schema version. Opening a file made by an older
-  pybodn brings it up to date, as Upgrading from 0.1.0 describes. A file that is not pybodn's,
-  such as another program's SQLite database, or one made by a newer pybodn, raises
+  pybodn brings it up to date, as Upgrading from an older release describes. A file that is not
+  pybodn's, such as another program's SQLite database, or one made by a newer pybodn, raises
   `StorageError` and stays exactly as it was.
 - A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
   next read or write, asking to be restarted, instead of using the file the old way.
@@ -544,18 +696,39 @@ with MemoryEngine.sqlite("backup.db") as copy:
     print(copy.collection("user:123").count())  # 1
 ```
 
-## Upgrading from 0.1.0
+pybodn does not check or compact the file itself; SQLite's own commands do. `PRAGMA
+integrity_check` reads the whole file and answers `ok` if nothing is damaged. `VACUUM` rewrites
+the file without the free space that deleted records leave: it needs as much free disk as the
+file takes, and holds the write lock while it runs, so run it while no engine is writing.
 
-pybodn 0.2.0 brings a file from 0.1.0 up to date the first time it opens it.
+```python
+import sqlite3
+from contextlib import closing
 
-1. Stop every process that uses the file. A process still running 0.1.0 would add records that
-   search never finds.
-2. Upgrade pybodn and start the processes again. The first to open the file indexes the words of
-   every record while it holds the file's write lock: 1.2 s per 100,000 records on the machine
-   of Speed and size. The others wait for it up to their `timeout`, then raise `StorageError`,
-   so open a large file once on its own first.
-3. With an embedding model, call `engine.embed_missing()` once, so that search by meaning finds
-   the records written before.
+from pybodn import MemoryEngine
+
+with MemoryEngine.sqlite("memory.db") as engine:
+    engine.collection("user:123").add("Prefers Python")
+
+with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
+    print(connection.execute("PRAGMA integrity_check").fetchone())  # ('ok',)
+    connection.execute("VACUUM")
+```
+
+## Upgrading from an older release
+
+pybodn 0.3.0 brings a file from 0.2.0 or 0.1.0 up to date the first time it opens it.
+
+1. Stop every process that uses the file. A process still running 0.2.0 raises `StorageError` on
+   its next write or search, but its other reads would show records that 0.3.0 hides, and one
+   running 0.1.0 would add records that search never finds.
+2. Upgrade pybodn and start the processes again. The first to open the file brings it up to date
+   while it holds the file's write lock, on the machine of Speed and size: 0.1 s per 100,000
+   records for a file from 0.2.0, which rebuilds two indexes, and 1.1 s for one from 0.1.0, which
+   also indexes the words of every record. The others wait for it up to their
+   `timeout`, then raise `StorageError`, so open a large file once on its own first.
+3. For a file from 0.1.0 with an embedding model, call `engine.embed_missing()` once, so that
+   search by meaning finds the records written before.
 
 ## Not in this release
 
@@ -567,7 +740,13 @@ pybodn 0.2.0 brings a file from 0.1.0 up to date the first time it opens it.
 - Ranking by importance or recency: the order depends only on how well a record matches.
 - Treating "café" as "cafe", and splitting languages written without spaces into words.
 - Several embedding models in one file at once.
-- Expiry, archiving and clean-up of old records, and an async API.
+- Deleting the expired records of one namespace only, or only those expired before a moment:
+  `purge_expired()` deletes them all.
+- Telling from the result of `dedupe=True` whether a record was added or found, `expected_version`
+  for `archive` and `restore`, and a filter that keeps only archived records.
+- An embedding model written as a coroutine: the async engine runs the plain `embed` in its
+  thread.
+- A minimum score for search.
 - Storage backends of your own: the storage interface is private for now.
 
 ## HashIndex
