@@ -262,8 +262,9 @@ def test_a_process_overtaken_by_a_newer_pybodn_stops_before_its_next_read(
 
 
 @pytest.mark.parametrize("upgrade", UPGRADES.values(), ids=UPGRADES.keys())
-def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_purges(
-    path: Path, upgrade: tuple[str, tuple[object, ...]]
+@pytest.mark.parametrize("name", ["purge_expired", "erase_deleted"])
+def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_purges_or_erases(
+    path: Path, upgrade: tuple[str, tuple[object, ...]], name: str
 ) -> None:
     with MemoryEngine.sqlite(path) as engine:
         # Arrange
@@ -274,7 +275,7 @@ def test_a_process_overtaken_by_a_newer_pybodn_stops_before_it_purges(
 
         # Act / Assert
         with pytest.raises(StorageError, match="restart"):
-            engine.purge_expired()
+            getattr(engine, name)()
         assert run_sql(path, "SELECT * FROM memories ORDER BY seq") == before
 
 

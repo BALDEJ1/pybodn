@@ -122,6 +122,10 @@ class InMemoryStore:
                 self._remove(namespace, record_id)
             return len(expired)
 
+    def erase_deleted(self) -> None:
+        with self._lock:
+            ensure_open(self)  # what a delete removes is gone at once: nothing is left to erase
+
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:
