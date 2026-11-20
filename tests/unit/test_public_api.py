@@ -21,7 +21,13 @@ PUBLIC_NAMES = [
 
 
 def test_the_package_exports_exactly_the_documented_names() -> None:
+    public = {
+        name
+        for name, value in vars(pybodn).items()
+        if not name.startswith("_") and not inspect.ismodule(value)
+    }
     assert sorted(pybodn.__all__) == sorted(PUBLIC_NAMES)
+    assert public == set(PUBLIC_NAMES) - {"__version__"}
 
 
 @pytest.mark.parametrize("name", PUBLIC_NAMES)

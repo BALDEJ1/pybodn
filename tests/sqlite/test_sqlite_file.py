@@ -1,6 +1,8 @@
 """The file outlives the engine; paths, time format and waiting for another writer."""
 
+import os
 import sqlite3
+import sys
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -68,6 +70,29 @@ def test_memory_keeps_each_engine_apart_and_nothing_after_close() -> None:
 def test_a_missing_folder_is_a_storage_error(tmp_path: Path) -> None:
     with pytest.raises(StorageError) as caught:
         MemoryEngine.sqlite(tmp_path / "missing" / "memory.db")
+    assert isinstance(caught.value.__cause__, sqlite3.Error)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="Windows does not stop writes to a read-only folder, and neither does root",
+)
+def test_a_file_in_a_read_only_folder_is_a_storage_error_with_sqlites_own_reason(
+    path: Path,
+) -> None:
+    # Arrange
+    MemoryEngine.sqlite(path).close()
+    path.parent.chmod(0o555)
+
+    # Act
+    try:
+        with pytest.raises(StorageError) as caught:
+            MemoryEngine.sqlite(path)
+    finally:
+        path.parent.chmod(0o755)
+
+    # Assert: the folder is to blame, not the SQLite this Python has
+    assert "FTS5" not in str(caught.value)
     assert isinstance(caught.value.__cause__, sqlite3.Error)
 
 

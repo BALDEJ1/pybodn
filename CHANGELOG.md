@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a file in a folder that cannot be written raises `StorageError` with SQLite's own reason. It used to say that this Python's SQLite lacked full-text search.
+- The package no longer shows `version`, a function it imported, as one of its names. `pybodn.__version__` stays.
+
 ## [0.3.0] - 2026-11-20
 
 ### Added

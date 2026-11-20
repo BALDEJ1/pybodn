@@ -215,6 +215,10 @@ class SQLiteStore:
         self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
+                # Each commit is flushed to disk before the call returns, from the first one on.
+                # This is also the first read of the file, so a file SQLite cannot use, such as
+                # one in a read-only folder, fails here with SQLite's own reason.
+                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
                 self._connection.create_function(
                     "pybodn_words", 1, _indexed_words, deterministic=True
                 )
@@ -228,8 +232,6 @@ class SQLiteStore:
                     _index_words(self._connection)
                     self._versions = _file_versions(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
-                # Each commit is flushed to disk before the call returns.
-                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
         except BaseException:
             self._connection.close()
             raise
@@ -508,7 +510,7 @@ def _migrate(connection: sqlite3.Connection) -> None:
 
 
 def _require_features(connection: sqlite3.Connection) -> None:
-    """Refuse an SQLite that lacks what the file needs, before the file is touched."""
+    """Refuse an SQLite that lacks what the file needs, before the file is changed."""
     try:
         connection.execute("SELECT json_valid('[]')").fetchall()
         connection.execute(f"CREATE VIRTUAL TABLE temp.trial USING {schema.WORD_INDEX}")
