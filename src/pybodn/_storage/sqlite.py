@@ -215,9 +215,9 @@ class SQLiteStore:
         self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
-                # Each commit is flushed to disk before the call returns, from the first one on.
-                # This is also the first read of the file, so a file SQLite cannot use, such as
-                # one in a read-only folder, fails here with SQLite's own reason.
+                # Keep this the first statement: it is the first read of the file, so a file
+                # SQLite cannot use, such as one in a read-only folder, fails here with SQLite's
+                # own reason. It also has each commit flushed to disk before the call returns.
                 self._connection.execute("PRAGMA synchronous = FULL").fetchall()
                 self._connection.create_function(
                     "pybodn_words", 1, _indexed_words, deterministic=True

@@ -27,7 +27,8 @@ def test_the_package_exports_exactly_the_documented_names() -> None:
         if not name.startswith("_") and not inspect.ismodule(value)
     }
     assert sorted(pybodn.__all__) == sorted(PUBLIC_NAMES)
-    assert public == set(PUBLIC_NAMES) - {"__version__"}
+    # __version__ is in __all__, though its name starts with an underscore.
+    assert public == set(pybodn.__all__) - {"__version__"}
 
 
 @pytest.mark.parametrize("name", PUBLIC_NAMES)

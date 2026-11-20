@@ -1,4 +1,5 @@
-"""Two engines on one file stand in for two processes: each sees the other's writes at once."""
+"""Two engines on one file act as two programs would: each sees the other's writes at once.
+The last test runs two real processes."""
 
 import multiprocessing
 import threading
@@ -158,11 +159,15 @@ def test_parallel_adds_of_one_text_from_two_engines_write_it_once(path: Path) ->
 
 
 def test_two_processes_that_open_one_file_and_write_at_once_lose_nothing(path: Path) -> None:
-    # Arrange: processes of their own, as two programs would be, not threads of this one
+    # Arrange: processes of their own, as two programs would be, not threads of this one. They
+    # wait for each other, so that they open the missing file and write at the same time.
     spawn = multiprocessing.get_context("spawn")
+    start = spawn.Barrier(2)
     contents = [[f"process {number} note {note}" for note in range(50)] for number in range(2)]
     workers = [
-        spawn.Process(target=add_in_another_process, args=(path, "user:123", mine), daemon=True)
+        spawn.Process(
+            target=add_in_another_process, args=(path, "user:123", mine, start), daemon=True
+        )
         for mine in contents
     ]
 

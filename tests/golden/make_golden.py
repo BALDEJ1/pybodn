@@ -7,7 +7,8 @@ Run it once for each release, from the repository root, with that release from P
     uv run --isolated --no-project --with "pybodn[vector]==0.2.0" python -m tests.golden.make_golden
     uv run --isolated --no-project --with "pybodn[vector]==0.3.0" python -m tests.golden.make_golden
 
-Each run writes tests/golden/pybodn-<release>.db, with only what that release can store.
+Each run writes tests/golden/pybodn-<release>.db, with only what that release can store. It
+refuses to replace a file that is there: the tests rely on these files never changing.
 """
 
 from datetime import UTC, datetime
@@ -82,7 +83,8 @@ def fill(engine: MemoryEngine) -> None:
     for record in first:
         add(notes, record)
     notes.delete(notes.add(DELETED).id)
-    notes.update(add(notes, last._replace(content=FIRST_WORDS)), content=last.content)
+    last_id = add(notes, last._replace(content=FIRST_WORDS))
+    notes.update(last_id, content=last.content)
     engine.collection(OTHER_NAMESPACE).add(OTHER)
     if hasattr(notes, "archive"):
         notes.add(EXPIRED, expires_at=LONG_AGO)
@@ -91,7 +93,8 @@ def fill(engine: MemoryEngine) -> None:
 
 def main() -> None:
     path = path_of(pybodn.__version__)
-    path.unlink(missing_ok=True)
+    if path.exists():
+        raise SystemExit(f"{path} is there already: delete it by hand to write it again")
     if hasattr(pybodn, "Embedder"):
         engine = MemoryEngine.sqlite(path, embedder=pybodn.Embedder(MODEL, embed))
     else:

@@ -14,7 +14,7 @@ from pybodn import MemoryEngine
 from pybodn._storage import schema, sqlite
 from pybodn._words import WORD_RULES
 from pybodn.errors import StorageError
-from tests.sqlite.support import THREADS, WAIT_SECONDS, make_old_file, run_sql
+from tests.sqlite.support import THREADS, WAIT_SECONDS, files_in, make_old_file, run_sql
 
 
 def make_pybodn_file(path: Path) -> None:
@@ -24,10 +24,6 @@ def make_pybodn_file(path: Path) -> None:
 
 def schema_objects(path: Path) -> list[tuple[object, ...]]:
     return run_sql(path, "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name")
-
-
-def files_in(folder: Path) -> list[str]:
-    return sorted(entry.name for entry in folder.iterdir())
 
 
 def assert_is_pybodn_file(path: Path) -> None:

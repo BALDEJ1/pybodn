@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
+from multiprocessing.synchronize import Barrier
 from pathlib import Path
 
 from pybodn import Embedder, MemoryEngine
@@ -23,8 +24,14 @@ def run_sql(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[t
         return connection.execute(sql, parameters).fetchall()
 
 
-def add_in_another_process(path: Path, namespace: str, contents: list[str]) -> None:
-    """Add each of ``contents`` in turn, one write each. Run in a process of its own."""
+def files_in(folder: Path) -> list[str]:
+    return sorted(entry.name for entry in folder.iterdir())
+
+
+def add_in_another_process(path: Path, namespace: str, contents: list[str], start: Barrier) -> None:
+    """Wait at ``start`` for the other processes, then open the file and add each of
+    ``contents`` in turn, one write each. Run in a process of its own."""
+    start.wait(WAIT_SECONDS)
     with MemoryEngine.sqlite(path, timeout=WAIT_SECONDS) as engine:
         notes = engine.collection(namespace)
         for content in contents:
