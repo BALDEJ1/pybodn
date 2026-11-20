@@ -1,4 +1,4 @@
-"""PyBodn: memory for AI agents in a single file, with no server and no LLM calls."""
+"""Store and search the memories of an application or an AI agent."""
 
 from importlib.metadata import version
 

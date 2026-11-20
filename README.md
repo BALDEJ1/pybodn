@@ -1,23 +1,22 @@
 # PyBodn
 
-Memory for AI agents in a single file. PyBodn keeps what your agent or app should remember:
-texts with a namespace, an optional key, JSON metadata, tags and an importance score. It finds
-them again by words and, with an embedding model of your own, by meaning.
+PyBodn is a Python library for keeping the memories of an application or an AI agent: short
+texts such as facts about a user, notes, or what happened in a conversation. It stores them in an
+SQLite file or in memory, and finds them again by words, or by meaning if you give it an
+embedding model.
 
-- **Nothing to run.** The memories live in one SQLite file, or in memory, inside your program:
-  no server and no vector database to set up.
-- **No LLM inside.** It stores exactly what you give it, skips copies if you ask, and never asks a
-  model what to keep. The only model it calls is the embedding model you give it.
-- **Words and meaning.** Search by words knows the forms of Ukrainian, Russian and English words.
-  Add an embedding model, and it searches by meaning too and mixes the two.
-- **Safe to share.** Several threads and processes can use one file at once, every change is in
-  the file before the call returns, and asyncio programs await the same calls.
-- **Forgets on purpose.** Records can expire, or be archived until you bring them back.
-- **Small core.** Nothing outside the Python standard library; search by meaning adds NumPy.
+Each record belongs to a namespace, for example one per user, and can have a key, JSON metadata,
+tags, an importance score and an expiry time. Several threads and processes can use the same
+file, and there is an async version of the API.
 
-It suits local agents, desktop and command-line apps, prototypes, and data that should stay on
-your machine. It is not made for one memory shared by many servers, or for search by meaning
-over millions of records, which reads every vector: see Speed and size.
+PyBodn runs inside your program. It needs no server and does not call an LLM; the only model it
+calls is the embedding model you pass in. The core uses only the standard library, and search by
+meaning needs NumPy.
+
+It is meant for a local agent, a desktop or command-line app, or a prototype. It is not meant for
+a memory shared by several servers, because the SQLite file has to stay on one machine, or for
+search by meaning over millions of records, because each search compares the query with every
+vector in the namespace.
 
 > **Status: alpha.** The API may still change between 0.x releases.
 
@@ -49,10 +48,10 @@ with MemoryEngine.sqlite("memory.db") as engine:
     print(notes.search("answer")[0].record.content)  # Prefers short answers
 ```
 
-The records stay in `memory.db` after the program ends. Every example below runs on its own in
-an empty folder.
+The records stay in `memory.db` after the program ends. Each example below runs on its own in an
+empty folder, once the packages it names are installed.
 
-An agent remembers from one run to the next by opening the same file each time:
+To keep memories between runs of a program, open the same file each time:
 
 ```python
 from pybodn import MemoryEngine
@@ -101,8 +100,8 @@ or a conversation. Namespaces never see each other's records, and the same key i
 namespaces names two different records. A collection holds no records itself, so getting one is
 cheap.
 
-Namespaces share one thing: the word counts that rank a search by words, as By words explains.
-To keep clients fully apart, give each one a file of its own.
+Namespaces do share the word counts that a search by words uses to rank records (see By words).
+If clients must be kept fully apart, give each one its own file.
 
 ```python
 from pybodn import MemoryEngine
@@ -531,14 +530,12 @@ fastest of five runs.
 - The word index is one for the whole file, so a common word takes longer the more records the
   file holds: in a file of 1,000,000 records in 1,000 namespaces, a search in one namespace
   takes 0.1 ms for a word that one record holds, and 119 ms for the five most common words.
-- `add` with `dedupe=True` looks for copies among the namespace's records without an index, so
-  it takes longer the larger the namespace: with an embedding model, 2.7 ms at 10,000 records
-  and 27 ms at 100,000.
-- Hidden records cost reads little: in a namespace of 100,000 records, every other one expired,
-  `count()` takes 3.6 ms and the first page of `list()` 0.1 ms. `purge_expired()` deletes the
-  50,000 expired ones in 1.3 s.
-- An awaited call takes about 30 µs longer than the same call made straight: the time to hand it
-  to a thread and back.
+- `add` with `dedupe=True` looks for copies without an index, so it gets slower as the namespace
+  grows. With an embedding model it takes 2.7 ms at 10,000 records and 27 ms at 100,000.
+- In a namespace of 100,000 records where every other one has expired, `count()` takes 3.6 ms
+  and the first page of `list()` 0.1 ms. `purge_expired()` deletes the 50,000 expired records in
+  1.3 s.
+- An async call takes about 30 µs longer than the same sync call, because it runs in a thread.
 
 ## Threads and processes
 
@@ -696,10 +693,10 @@ with MemoryEngine.sqlite("backup.db") as copy:
     print(copy.collection("user:123").count())  # 1
 ```
 
-pybodn does not check or compact the file itself; SQLite's own commands do. `PRAGMA
-integrity_check` reads the whole file and answers `ok` if nothing is damaged. `VACUUM` rewrites
-the file without the free space that deleted records leave: it needs as much free disk as the
-file takes, and holds the write lock while it runs, so run it while no engine is writing.
+To check or compact the file, use SQLite's own commands. `PRAGMA integrity_check` reads the
+whole file and answers `ok` if nothing is damaged. `VACUUM` rewrites the file without the free
+space left by deleted records. It needs as much free disk space as the file takes and holds the
+write lock while it runs, so run it when no engine is writing.
 
 ```python
 import sqlite3

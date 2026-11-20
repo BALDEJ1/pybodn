@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "pybodn"
 version = "0.2.0"
-description = "Memory for AI agents in a single file: no server, no LLM calls, search by words and by meaning."
+description = "Store the memories of an AI agent or app in a local SQLite file and search them by words, or by meaning with your own embedding model."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
