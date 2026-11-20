@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
 ### Added
 
 - Hidden records. `Collection.archive(id)` hides a record and `Collection.restore(id)` brings it back; `expires_at`, a moment with a time zone that `add`, `add_many`, `put` and `update` take, hides a record from that moment on, and `update(id, expires_at=None)` clears it. A hidden record stays stored: `get`, `get_by_key`, `list`, `count` and `search` leave it out unless `include_archived=True` or `include_expired=True` asks for it, while `update`, `put`, `delete`, `archive` and `restore` still reach it, and it keeps its key, so `add` with that key raises `DuplicateKeyError` and `put` replaces it, bringing it back from the archive. `update` leaves a record archived or not as it was. Archiving or restoring changes the version and `updated_at` only when it changes the record, and a missing record raises `RecordNotFoundError`. Hidden records still count in the scores of a search by words, and `embed_missing` gives them vectors too.
