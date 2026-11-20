@@ -23,6 +23,14 @@ def run_sql(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[t
         return connection.execute(sql, parameters).fetchall()
 
 
+def add_in_another_process(path: Path, namespace: str, contents: list[str]) -> None:
+    """Add each of ``contents`` in turn, one write each. Run in a process of its own."""
+    with MemoryEngine.sqlite(path, timeout=WAIT_SECONDS) as engine:
+        notes = engine.collection(namespace)
+        for content in contents:
+            notes.add(content)
+
+
 @contextmanager
 def another_writer(path: Path) -> Iterator[sqlite3.Connection]:
     """A connection of its own that holds the file's write lock until it commits, rolls back,

@@ -1,0 +1,2 @@
+# Files that released versions of pybodn wrote, for the tests of old files.
+tests/golden/*.db binary

@@ -557,8 +557,7 @@ def _namespace_token(namespace: object) -> str:
 
     The tokenizer keeps hex digits together, so any namespace is one token. FTS5 cuts a token
     longer than 32 KB short, so namespaces longer than 16 KB may share one. Files keep the
-    tokens they were indexed with: a change here must raise ``WORD_RULES``, so that they are
-    indexed again.
+    tokens they were indexed with, so the token stays as it is until 2.0, as ``WORD_RULES`` does.
     """
     return namespace.encode().hex() if isinstance(namespace, str) else ""  # damaged: no token
 
