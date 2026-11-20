@@ -1,12 +1,16 @@
 """What the SQLite tests share: timings, a moment long past, other connections to the file, as
 another process would open them, and files as older pybodn versions left them."""
 
+import os
 import sqlite3
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from multiprocessing.synchronize import Barrier
 from pathlib import Path
+
+import pytest
 
 from pybodn import Embedder, MemoryEngine
 from pybodn._storage import schema
@@ -17,11 +21,25 @@ WAIT_SECONDS = 10  # seconds: generous for a slow machine, far below a wait that
 THREADS = 8
 PAST = datetime(2000, 1, 1, tzinfo=UTC)  # an expiry long gone on the real clock
 
+needs_read_only = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="Windows does not stop writes to a read-only folder, and neither does root",
+)
+
 
 def run_sql(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> list[tuple[object, ...]]:
     """Run one statement on the file through a connection of its own."""
     with closing(sqlite3.connect(path, autocommit=True)) as connection:
         return connection.execute(sql, parameters).fetchall()
+
+
+def format_marks(path: Path) -> tuple[object, ...]:
+    """The application id, schema version and word rules of the file at ``path``."""
+    return run_sql(
+        path,
+        "SELECT application_id, user_version, value FROM pragma_application_id,"
+        " pragma_user_version, settings WHERE name = 'word_rules'",
+    )[0]
 
 
 def files_in(folder: Path) -> list[str]:

@@ -20,7 +20,7 @@ from tests.golden.make_golden import (
     embed,
     path_of,
 )
-from tests.sqlite.support import files_in, run_sql
+from tests.sqlite.support import files_in, format_marks
 
 RELEASES = ("0.1.0", "0.2.0", "0.3.0")
 WITH_VECTORS = ("0.2.0", "0.3.0")
@@ -41,15 +41,6 @@ def fields_of(record: MemoryRecord) -> tuple[object, ...]:
         record.importance,
         record.source,
     )
-
-
-def format_marks(path: Path) -> tuple[object, ...]:
-    """The application id, schema version and word rules of the file at ``path``."""
-    return run_sql(
-        path,
-        "SELECT application_id, user_version, value FROM pragma_application_id,"
-        " pragma_user_version, settings WHERE name = 'word_rules'",
-    )[0]
 
 
 @pytest.mark.parametrize("release", RELEASES)
