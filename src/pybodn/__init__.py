@@ -1,4 +1,4 @@
-"""PyBodn: a foundational memory engine for intelligent systems."""
+"""Store and search the memories of an application or an AI agent."""
 
 from importlib.metadata import version
 
