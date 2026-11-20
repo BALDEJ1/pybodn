@@ -215,6 +215,10 @@ class SQLiteStore:
         self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
+                # Keep this the first statement: it is the first read of the file, so a file
+                # SQLite cannot use, such as one in a read-only folder, fails here with SQLite's
+                # own reason. It also has each commit flushed to disk before the call returns.
+                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
                 self._connection.create_function(
                     "pybodn_words", 1, _indexed_words, deterministic=True
                 )
@@ -228,8 +232,6 @@ class SQLiteStore:
                     _index_words(self._connection)
                     self._versions = _file_versions(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
-                # Each commit is flushed to disk before the call returns.
-                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
         except BaseException:
             self._connection.close()
             raise
@@ -508,7 +510,7 @@ def _migrate(connection: sqlite3.Connection) -> None:
 
 
 def _require_features(connection: sqlite3.Connection) -> None:
-    """Refuse an SQLite that lacks what the file needs, before the file is touched."""
+    """Refuse an SQLite that lacks what the file needs, before the file is changed."""
     try:
         connection.execute("SELECT json_valid('[]')").fetchall()
         connection.execute(f"CREATE VIRTUAL TABLE temp.trial USING {schema.WORD_INDEX}")
@@ -555,8 +557,7 @@ def _namespace_token(namespace: object) -> str:
 
     The tokenizer keeps hex digits together, so any namespace is one token. FTS5 cuts a token
     longer than 32 KB short, so namespaces longer than 16 KB may share one. Files keep the
-    tokens they were indexed with: a change here must raise ``WORD_RULES``, so that they are
-    indexed again.
+    tokens they were indexed with, so the token stays as it is until 2.0, as ``WORD_RULES`` does.
     """
     return namespace.encode().hex() if isinstance(namespace, str) else ""  # damaged: no token
 

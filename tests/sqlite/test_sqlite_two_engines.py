@@ -1,5 +1,7 @@
-"""Two engines on one file stand in for two processes: each sees the other's writes at once."""
+"""Two engines on one file act as two programs would: each sees the other's writes at once.
+The last test runs two real processes."""
 
+import multiprocessing
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -8,7 +10,13 @@ import pytest
 
 from pybodn import MemoryEngine, NewMemory
 from pybodn.errors import ConcurrentUpdateError, RecordNotFoundError
-from tests.sqlite.support import SHORT_WAIT, THREADS, WAIT_SECONDS
+from tests.sqlite.support import (
+    SHORT_WAIT,
+    THREADS,
+    WAIT_SECONDS,
+    add_in_another_process,
+    run_sql,
+)
 
 CALLS = 20
 MISSING_ID = "0" * 32
@@ -148,3 +156,30 @@ def test_parallel_adds_of_one_text_from_two_engines_write_it_once(path: Path) ->
         # Assert
         assert len(ids) == 1
         assert first.collection("user:123").count() == 1
+
+
+def test_two_processes_that_open_one_file_and_write_at_once_lose_nothing(path: Path) -> None:
+    # Arrange: processes of their own, as two programs would be, not threads of this one. They
+    # wait for each other, so that they open the missing file and write at the same time.
+    spawn = multiprocessing.get_context("spawn")
+    start = spawn.Barrier(2)
+    contents = [[f"process {number} note {note}" for note in range(50)] for number in range(2)]
+    workers = [
+        spawn.Process(
+            target=add_in_another_process, args=(path, "user:123", mine, start), daemon=True
+        )
+        for mine in contents
+    ]
+
+    # Act
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(WAIT_SECONDS)
+
+    # Assert
+    assert [worker.exitcode for worker in workers] == [0, 0]
+    with MemoryEngine.sqlite(path) as engine:
+        stored = sorted(record.content for record in engine.collection("user:123").list())
+    assert stored == sorted(contents[0] + contents[1])
+    assert run_sql(path, "PRAGMA integrity_check") == [("ok",)]
