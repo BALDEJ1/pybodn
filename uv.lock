@@ -482,7 +482,7 @@ wheels = [
 
 [[package]]
 name = "pybodn"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 default-groups = ["dev", "vector"]
 
