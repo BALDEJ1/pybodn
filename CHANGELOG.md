@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `MemoryEngine.erase_deleted()` and its async twin erase from the file the data of deleted and purged records and the old values that `put` and `update` replaced, so that a program reading the file itself no longer finds it. If it cannot finish, it raises `StorageError` and the file stays intact; the README section Erase deleted data tells the rest.
+- The README sections Compatibility and Data and security.
+- CONTRIBUTING.md, and issue templates for bugs and ideas.
 
 ### Changed
 
 - The docstrings of the public classes and methods describe their parameters and errors, and say which data stays in the file until `erase_deleted()`.
 - The README no longer suggests running `VACUUM` by hand: `erase_deleted()` does it and more.
+- The package is marked as stable on PyPI.
 
 ### Fixed
 

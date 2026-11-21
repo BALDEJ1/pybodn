@@ -1,0 +1,4 @@
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/BALDEJ1/pybodn/security/policy
+    about: Report it privately, as the security policy describes, not in a public issue.
