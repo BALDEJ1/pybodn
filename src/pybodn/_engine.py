@@ -27,7 +27,9 @@ class MemoryEngine:
     ``MemoryEngine.in_memory()``, and use it in ``with``.
 
     The engine owns its storage: ``close()`` closes it, and any use after that raises
-    ``EngineClosedError``.
+    ``EngineClosedError``. Every method of the engine and of its collections raises
+    ``ValidationError`` for an invalid argument, naming it, ``TypeError`` for an unknown keyword
+    argument, and ``StorageError`` if the storage fails.
     """
 
     __slots__ = ("_clock", "_embedder", "_store", "_vectorize")
@@ -52,11 +54,17 @@ class MemoryEngine:
         timeout: float = 5.0,
         embedder: Embedder | None = None,
     ) -> Self:
-        """An engine that keeps records in the SQLite file at ``path``, made if missing.
+        """An engine that keeps records in the SQLite file at ``path``, a string or path
+        object, made if missing. ``":memory:"`` keeps records in memory until the engine is
+        closed.
 
-        While another process writes to the file, a write waits up to ``timeout`` seconds,
-        then raises ``StorageError``. ``":memory:"`` keeps records in memory until the
-        engine is closed. ``embedder`` is the embedding model that search by meaning uses.
+        While another write holds the file, a write waits up to ``timeout`` seconds, from 0 to
+        2,147,483, then raises ``StorageError``. ``embedder`` is the embedding model that search
+        by meaning uses; it needs NumPy, or this raises ``ConfigurationError``.
+
+        A file from an older pybodn is brought up to date as it opens. A file that cannot be
+        opened, is not pybodn's or comes from a newer pybodn, or whose SQLite lacks full-text
+        search or JSON, raises ``StorageError`` and stays as it was.
         """
         checked_path = validate.path(path)
         checked_timeout = validate.timeout(timeout)
@@ -66,12 +74,16 @@ class MemoryEngine:
     @classmethod
     def in_memory(cls, *, embedder: Embedder | None = None) -> Self:
         """An engine that keeps records in this process's memory until it is closed.
-        ``embedder`` is the embedding model that search by meaning uses."""
+
+        ``embedder`` is the embedding model that search by meaning uses; it needs NumPy, or this
+        raises ``ConfigurationError``.
+        """
         checked_embedder = _checked(embedder)
         return cls(InMemoryStore(), embedder=checked_embedder)
 
     def collection(self, namespace: str) -> Collection:
-        """The records of ``namespace``. Namespaces never see each other's records."""
+        """The records of ``namespace``, a non-empty string. Namespaces never see each other's
+        records."""
         ensure_open(self._store)
         return Collection(
             self._store, validate.text("namespace", namespace), self._clock, self._vectorize
@@ -87,6 +99,10 @@ class MemoryEngine:
         at the start, and each batch is written as soon as the model answers: if the model
         fails, the batches before stay written. A record whose text changes meanwhile keeps
         no vector of its old text, and waits for the next call.
+
+        Raises ``ConfigurationError`` if the engine has no model. An error the model raises
+        passes through as it is, and an answer it gives that cannot be used raises
+        ``EmbeddingError``.
         """
         ensure_open(self._store)
         embedder, vectorize = self._embedder, self._vectorize
@@ -105,10 +121,10 @@ class MemoryEngine:
     def purge_expired(self) -> int:
         """Delete every record that has expired, in every namespace, and return how many.
 
-        Expired records stay in the store, hidden, until this deletes them. They go in
-        batches, each deleted at once: if one fails, the batches before stay deleted. Every
-        batch goes by the moment the call began, so a record that expires meanwhile waits for
-        the next call.
+        Expired records stay in the store, hidden, until this deletes them, and their data stays
+        in the file until ``erase_deleted()``. They go in batches, each deleted at once: if one
+        fails, the batches before stay deleted. Every batch goes by the moment the call began, so
+        a record that expires meanwhile waits for the next call.
         """
         now = self._clock()
         purged = 0

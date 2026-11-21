@@ -67,55 +67,55 @@ class AsyncCollection:
     async def add(
         self, content: str, *, dedupe: bool = False, **fields: Unpack[NewMemoryFields]
     ) -> MemoryRecord:
-        """``Collection.add()``."""
+        """Add a record, as ``Collection.add()`` does."""
         return await _in_thread(self._collection.add, content, dedupe=dedupe, **fields)
 
     async def add_many(
         self, memories: Iterable[NewMemory], *, dedupe: bool = False
     ) -> builtins.list[MemoryRecord]:
-        """``Collection.add_many()``."""
+        """Add every memory, or none, as ``Collection.add_many()`` does."""
         return await _in_thread(self._collection.add_many, memories, dedupe=dedupe)
 
     async def put(self, key: str, content: str, **fields: Unpack[MemoryFields]) -> MemoryRecord:
-        """``Collection.put()``."""
+        """Create or replace the record with ``key``, as ``Collection.put()`` does."""
         return await _in_thread(self._collection.put, key, content, **fields)
 
     async def get(self, id: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """``Collection.get()``."""
+        """The record with ``id``, or ``None``, as ``Collection.get()`` gives it."""
         return await _in_thread(self._collection.get, id, **options)
 
     async def get_by_key(self, key: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """``Collection.get_by_key()``."""
+        """The record with ``key``, or ``None``, as ``Collection.get_by_key()`` gives it."""
         return await _in_thread(self._collection.get_by_key, key, **options)
 
     async def update(
         self, id: str, *, expected_version: int | None = None, **changes: Unpack[MemoryChanges]
     ) -> MemoryRecord:
-        """``Collection.update()``."""
+        """Change the fields passed, as ``Collection.update()`` does."""
         return await _in_thread(
             self._collection.update, id, expected_version=expected_version, **changes
         )
 
     async def archive(self, id: str) -> MemoryRecord:
-        """``Collection.archive()``."""
+        """Hide the record from every read, as ``Collection.archive()`` does."""
         return await _in_thread(self._collection.archive, id)
 
     async def restore(self, id: str) -> MemoryRecord:
-        """``Collection.restore()``."""
+        """Bring the record back from the archive, as ``Collection.restore()`` does."""
         return await _in_thread(self._collection.restore, id)
 
     async def delete(self, id: str) -> bool:
-        """``Collection.delete()``."""
+        """Remove the record, as ``Collection.delete()`` does."""
         return await _in_thread(self._collection.delete, id)
 
     async def list(
         self, *, limit: int | None = None, offset: int = 0, **filters: Unpack[Filters]
     ) -> builtins.list[MemoryRecord]:
-        """``Collection.list()``."""
+        """Records in the order they were added, as ``Collection.list()`` gives them."""
         return await _in_thread(self._collection.list, limit=limit, offset=offset, **filters)
 
     async def count(self, **filters: Unpack[Filters]) -> int:
-        """``Collection.count()``."""
+        """The number of records, as ``Collection.count()`` gives it."""
         return await _in_thread(self._collection.count, **filters)
 
     async def search(
@@ -126,7 +126,7 @@ class AsyncCollection:
         mode: SearchMode = "auto",
         **filters: Unpack[Filters],
     ) -> builtins.list[SearchHit]:
-        """``Collection.search()``."""
+        """The records that best match ``query``, as ``Collection.search()`` finds them."""
         return await _in_thread(self._collection.search, query, limit=limit, mode=mode, **filters)
 
 
@@ -166,15 +166,15 @@ class AsyncMemoryEngine:
         return AsyncCollection(self._engine.collection(namespace))
 
     async def embed_missing(self) -> int:
-        """``MemoryEngine.embed_missing()``."""
+        """Give a vector to every record that has none, as ``MemoryEngine.embed_missing()`` does."""
         return await _in_thread(self._engine.embed_missing)
 
     async def purge_expired(self) -> int:
-        """``MemoryEngine.purge_expired()``."""
+        """Delete every record that has expired, as ``MemoryEngine.purge_expired()`` does."""
         return await _in_thread(self._engine.purge_expired)
 
     async def erase_deleted(self) -> None:
-        """``MemoryEngine.erase_deleted()``."""
+        """Erase hidden data from the file, as ``MemoryEngine.erase_deleted()`` does."""
         return await _in_thread(self._engine.erase_deleted)
 
     async def close(self) -> None:

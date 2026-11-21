@@ -22,7 +22,7 @@ class ValidationError(PyBodnError, ValueError):
 
 
 class RecordNotFoundError(PyBodnError, LookupError):
-    """The record to update does not exist."""
+    """The record to update, archive or restore does not exist."""
 
 
 class DuplicateKeyError(PyBodnError):
@@ -34,7 +34,7 @@ class ConcurrentUpdateError(PyBodnError):
 
 
 class StorageError(PyBodnError):
-    """The storage failed. The original error is the cause."""
+    """The storage failed. The original error, if there is one, is its cause."""
 
 
 class EngineClosedError(PyBodnError):

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The docstrings of the public classes and methods describe their parameters and errors, and say which data stays in the file until `erase_deleted()`.
 - The README no longer suggests running `VACUUM` by hand: `erase_deleted()` does it and more.
 
 ### Fixed
