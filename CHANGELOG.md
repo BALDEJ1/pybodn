@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Code and files made with 1.0 keep working in every 1.x release, as the README section Compatibility describes. A file from 0.3.0 is already in the 1.x format.
 - `MemoryEngine.erase_deleted()` and its async twin erase from the file the data of deleted and purged records and the old values that `put` and `update` replaced, so that a program reading the file itself no longer finds it. If it cannot finish, it raises `StorageError` and the file stays intact; the README section Erase deleted data tells the rest.
-- The README sections Compatibility and Data and security.
+- The README section Data and security.
 - CONTRIBUTING.md, and issue templates for bugs and ideas.
 
 ### Changed

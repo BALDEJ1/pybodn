@@ -211,7 +211,7 @@ class SQLiteStore:
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
 
-        A file that is not pybodn's, or is from a newer pybodn, raises ``StorageError`` and is
+        A file that is not pybodn's, or is in a newer file format, raises ``StorageError`` and is
         left as it was.
         """
         self._lock = threading.Lock()
