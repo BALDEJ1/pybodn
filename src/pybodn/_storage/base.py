@@ -120,6 +120,10 @@ class Store(Protocol):
         ``pybodn._filter.is_expired`` tells, with their vectors, all at once. Returns how many.
         """
 
+    def erase_deleted(self) -> None:
+        """Remove from the storage what deletes, replacements and purges left in it before the
+        call, and keep every stored record as it is. A failure leaves the storage intact."""
+
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
     ) -> builtins.list[MemoryRecord]:

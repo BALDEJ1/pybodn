@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MemoryEngine.erase_deleted()` and its async twin erase from the file the data of deleted and purged records and the old values that `put` and `update` replaced, so that a program reading the file itself no longer finds it. If it cannot finish, it raises `StorageError` and the file stays intact; the README section Erase deleted data tells the rest.
+
+### Changed
+
+- The README no longer suggests running `VACUUM` by hand: `erase_deleted()` does it and more.
+
 ### Fixed
 
 - Opening a file in a folder that cannot be written raises `StorageError` with SQLite's own reason. It used to say that this Python's SQLite lacked full-text search.

@@ -190,6 +190,14 @@ _PURGE = (
     "DELETE FROM memories WHERE seq IN (SELECT value FROM json_each(?))",
 )
 
+# An erase: the word index written anew with only the words of stored records, which VACUUM alone
+# would not do; the file written anew without the pages deleted data was left on; and the log
+# copied into the file and emptied, which waits for every reader of the log.
+_OPTIMIZE_WORDS = "INSERT INTO memory_words(memory_words) VALUES ('optimize')"
+_VACUUM = "VACUUM"
+_EMPTY_LOG = "PRAGMA wal_checkpoint(TRUNCATE)"
+_NOT_ERASED = "deleted data may still be in the file, which is intact"
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -318,6 +326,21 @@ class SQLiteStore:
                 for statement in _PURGE:
                     self._connection.execute(statement, (given,))
         return len(seqs)
+
+    def erase_deleted(self) -> None:
+        with self._lock:
+            ensure_open(self)
+            try:
+                with self._up_to_date(_BEGIN_WRITE):
+                    self._connection.execute(_OPTIMIZE_WORDS)
+                with _storage_errors():
+                    self._connection.execute(_VACUUM)
+                    busy, _, _ = self._connection.execute(_EMPTY_LOG).fetchone()
+                if busy:
+                    raise StorageError("another connection kept the file busy until the timeout")
+            except StorageError as error:
+                error.add_note(_NOT_ERASED)
+                raise
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int

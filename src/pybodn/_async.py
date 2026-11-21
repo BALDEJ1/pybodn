@@ -173,6 +173,10 @@ class AsyncMemoryEngine:
         """``MemoryEngine.purge_expired()``."""
         return await _in_thread(self._engine.purge_expired)
 
+    async def erase_deleted(self) -> None:
+        """``MemoryEngine.erase_deleted()``."""
+        return await _in_thread(self._engine.erase_deleted)
+
     async def close(self) -> None:
         """Close the storage. Safe to call again.
 

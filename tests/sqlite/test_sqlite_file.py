@@ -1,8 +1,6 @@
 """The file outlives the engine; paths, time format and waiting for another writer."""
 
-import os
 import sqlite3
-import sys
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -13,7 +11,13 @@ import pytest
 from pybodn import Collection, MemoryEngine, NewMemory
 from pybodn._storage.sqlite import SQLiteStore
 from pybodn.errors import StorageError, ValidationError
-from tests.sqlite.support import RELEASE_AFTER, SHORT_WAIT, another_writer, run_sql
+from tests.sqlite.support import (
+    RELEASE_AFTER,
+    SHORT_WAIT,
+    another_writer,
+    needs_read_only,
+    run_sql,
+)
 
 
 def test_records_survive_closing_and_reopening(path: Path) -> None:
@@ -73,10 +77,7 @@ def test_a_missing_folder_is_a_storage_error(tmp_path: Path) -> None:
     assert isinstance(caught.value.__cause__, sqlite3.Error)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="Windows does not stop writes to a read-only folder, and neither does root",
-)
+@needs_read_only
 def test_a_file_in_a_read_only_folder_is_a_storage_error_with_sqlites_own_reason(
     path: Path,
 ) -> None:

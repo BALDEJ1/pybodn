@@ -116,6 +116,20 @@ class MemoryEngine:
             purged += deleted
         return purged
 
+    def erase_deleted(self) -> None:
+        """Erase from the file and its log the data hidden before the call, so that a program
+        reading the file itself no longer finds it.
+
+        A delete, a ``put`` or ``update`` that replaces values, and ``purge_expired`` hide data at
+        once, but it stays in the file until this erases it. Archived records and expired ones
+        not yet purged are still stored, and stay. While it runs, other writers wait, and it needs
+        free disk space up to twice the size of the file. If another connection keeps the file
+        busy all the while, or the file cannot be written, it raises ``StorageError``: the file is
+        intact, deleted data may still be in it, and the call can be made again later. In memory,
+        there is nothing to erase.
+        """
+        self._store.erase_deleted()
+
     def close(self) -> None:
         """Close the storage. Safe to call again."""
         self._store.close()

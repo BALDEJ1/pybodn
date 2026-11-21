@@ -310,7 +310,8 @@ with MemoryEngine.in_memory() as engine:
 ### Delete: `delete`
 
 `delete(id)` removes the record and returns `True`, or returns `False` if there was none, so
-calling it twice is safe. The key of a deleted record is free to use again.
+calling it twice is safe. The key of a deleted record is free to use again. Its data stays in the
+file until `engine.erase_deleted()` erases it, as Erase deleted data describes.
 
 ```python
 from pybodn import MemoryEngine
@@ -362,6 +363,40 @@ with MemoryEngine.in_memory() as engine:
     print(notes.get(old.id))  # None
     print(notes.restore(old.id).content)  # Uses Python 3.11
     print(engine.purge_expired())  # 1
+```
+
+### Erase deleted data: `erase_deleted`
+
+A delete hides a record at once, but its data stays in the file until `engine.erase_deleted()`
+erases it. So do the old values that `put` and `update` replace, and the records that
+`purge_expired()` deletes. Until then, a program that reads the file itself, not through pybodn,
+can still find them.
+
+`erase_deleted()` rewrites the file and the log beside it without the data hidden before the
+call. Archived records, and expired records that `purge_expired()` has not deleted yet, are
+still stored, so they stay: delete them first to erase them. Searches find the same records
+afterwards.
+
+- Run it now and then, not after every delete. It rewrites the whole file, and other writers wait
+  while it runs, so its time grows with the size of the file: on the machine of Speed and size,
+  about 0.2 s for 100,000 records without vectors, half of them just purged.
+- It needs free disk space up to twice the size of the file.
+- If another connection keeps the file busy for the whole `timeout`, by reading or writing, or the
+  file cannot be written, it raises `StorageError`. The file is intact, but deleted data may still
+  be in it, so call it again later.
+- It erases the file and its log, and nothing else: copies and backups of the file, the disk
+  under it, which may keep old blocks, and copies that your program or your embedding model's
+  provider made are out of its reach. If you need more, keep the file on an encrypted disk.
+- In memory, there is nothing to erase: a deleted record is gone at once.
+
+```python
+from pybodn import MemoryEngine
+
+with MemoryEngine.sqlite("memory.db") as engine:
+    notes = engine.collection("user:123")
+    notes.delete(notes.add("Phone number is 555-0100").id)
+
+    engine.erase_deleted()  # the number is gone from memory.db and its log
 ```
 
 ## Search
@@ -534,7 +569,7 @@ fastest of five runs.
   grows. With an embedding model it takes 2.7 ms at 10,000 records and 27 ms at 100,000.
 - In a namespace of 100,000 records where every other one has expired, `count()` takes 3.6 ms
   and the first page of `list()` 0.1 ms. `purge_expired()` deletes the 50,000 expired records in
-  1.3 s.
+  1.2 s, and `erase_deleted()` then takes 0.2 s.
 - An async call takes about 30 µs longer than the same sync call, because it runs in a thread.
 
 ## Threads and processes
@@ -613,7 +648,7 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
 | `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
 | `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
-| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, or another program damaged a record in it. The original error is its `__cause__`. |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
 An unknown keyword argument raises `TypeError`, as it does for any Python function. An error
@@ -693,10 +728,9 @@ with MemoryEngine.sqlite("backup.db") as copy:
     print(copy.collection("user:123").count())  # 1
 ```
 
-To check or compact the file, use SQLite's own commands. `PRAGMA integrity_check` reads the
-whole file and answers `ok` if nothing is damaged. `VACUUM` rewrites the file without the free
-space left by deleted records. It needs as much free disk space as the file takes and holds the
-write lock while it runs, so run it when no engine is writing.
+To check the file, use SQLite's `PRAGMA integrity_check`: it reads the whole file and answers
+`ok` if nothing is damaged. To compact the file and erase deleted data from it, call
+`engine.erase_deleted()`, as Erase deleted data describes.
 
 ```python
 import sqlite3
@@ -709,7 +743,6 @@ with MemoryEngine.sqlite("memory.db") as engine:
 
 with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
     print(connection.execute("PRAGMA integrity_check").fetchone())  # ('ok',)
-    connection.execute("VACUUM")
 ```
 
 ## Upgrading from an older release

@@ -43,6 +43,7 @@ def test_every_documented_name_can_be_imported(name: str) -> None:
         (MemoryEngine.collection, ["namespace"]),
         (MemoryEngine.embed_missing, []),
         (MemoryEngine.purge_expired, []),
+        (MemoryEngine.erase_deleted, []),
         (Collection.add, ["content"]),
         (Collection.add_many, ["memories"]),
         (Collection.put, ["key", "content"]),
