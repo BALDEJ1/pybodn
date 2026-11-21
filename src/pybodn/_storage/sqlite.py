@@ -2,6 +2,7 @@
 
 import builtins
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -69,7 +70,9 @@ _PAGE = " ORDER BY seq LIMIT ? OFFSET ?"
 _KEY_USED = "SELECT 1 FROM memories WHERE namespace = ? AND memory_key = ?"
 _DELETE = "DELETE FROM memories WHERE namespace = ? AND id = ?"
 _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
-_PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
+_PAUSE = 0.01  # seconds between tries while the file is busy
+# Triggers and views would run SQL of the file's own in pybodn's reads and writes.
+_CODE_IN_FILE = "SELECT count(*) FROM sqlite_master WHERE type IN ('trigger', 'view')"
 _BEGIN_WRITE = "BEGIN IMMEDIATE"  # takes the write lock at once, waiting up to the timeout
 _BEGIN_READ = "BEGIN"  # every read until the end sees the file as it was at the first
 
@@ -211,11 +214,12 @@ class SQLiteStore:
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
 
-        A file that is not pybodn's, or is from a newer pybodn, raises ``StorageError`` and is
+        A file that is not pybodn's, or is in a newer file format, raises ``StorageError`` and is
         left as it was.
         """
         self._lock = threading.Lock()
         self._closed = False
+        _wait_for_no_journal(path, timeout)
         with _storage_errors():
             self._connection = sqlite3.connect(
                 path, timeout=timeout, autocommit=True, check_same_thread=False
@@ -223,16 +227,19 @@ class SQLiteStore:
         self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
-                # Keep this the first statement: it is the first read of the file, so a file
-                # SQLite cannot use, such as one in a read-only folder, fails here with SQLite's
-                # own reason. It also has each commit flushed to disk before the call returns.
-                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
+                # The file's own schema may not call the functions this connection lends SQLite.
+                # SQLite checks the schema against them as it first reads it, so both come first.
+                self._connection.execute("PRAGMA trusted_schema = OFF").fetchall()
                 self._connection.create_function(
                     "pybodn_words", 1, _indexed_words, deterministic=True
                 )
                 self._connection.create_function(
                     "pybodn_namespace_token", 1, _namespace_token, deterministic=True
                 )
+                # Keep this the first read of the file, so that a file SQLite cannot use, such as
+                # one in a read-only folder, fails here with SQLite's own reason. It also has each
+                # commit flushed to disk before the call returns.
+                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
                 _require_features(self._connection)
                 # two processes never migrate at once
                 with _transaction(self._connection, _BEGIN_WRITE):
@@ -524,12 +531,33 @@ def _migrate(connection: sqlite3.Connection) -> None:
             f"the file has schema version {version}, newer than the {latest} this pybodn"
             " knows: upgrade pybodn to open it"
         )
+    if _single(connection, _CODE_IN_FILE):
+        raise StorageError("the file holds triggers or views, which pybodn never makes")
     for number in range(version + 1, latest + 1):
         for statement in schema.MIGRATIONS[number - 1]:
             connection.execute(statement)
         connection.execute(f"PRAGMA user_version = {number}")
     if is_new:
         connection.execute(f"PRAGMA application_id = {schema.APPLICATION_ID}")
+
+
+def _wait_for_no_journal(path: str, timeout: float) -> None:
+    """Wait up to ``timeout`` for no rollback journal to lie beside the file, then refuse it.
+
+    pybodn's files use the write-ahead log, so a journal is there only while a new file is made, or
+    after a crash in the making. SQLite would apply it to the file on opening, and one planted there
+    can destroy the file and delete another one it names.
+    """
+    journal = f"{path}-journal"
+    deadline = time.monotonic() + timeout
+    while os.path.exists(journal):
+        if time.monotonic() >= deadline:
+            raise StorageError(
+                "a rollback journal lies beside the file, and SQLite would apply it: if no"
+                f" program is making the file now, check where {journal!r} came from, and"
+                " remove it"
+            )
+        time.sleep(_PAUSE)
 
 
 def _require_features(connection: sqlite3.Connection) -> None:

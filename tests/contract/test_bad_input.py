@@ -12,6 +12,7 @@ from pybodn import Collection, MemoryEngine, MemoryRecord, NewMemory
 from pybodn.errors import ValidationError
 
 MAX_INTEGER = 2**63 - 1
+HUGE_INTEGER = 10**5000  # more digits than Python writes out as text
 LONE_SURROGATE = "\ud800"
 
 
@@ -31,7 +32,7 @@ BAD_FIELDS = [
     pytest.param({"metadata": {"value": {1, 2}}}, id="set-in-metadata"),
     pytest.param({"metadata": {1: "value"}}, id="number-key-in-metadata"),
     pytest.param({"metadata": nested(101)}, id="too-deep-metadata"),
-    pytest.param({"metadata": {"value": 10**5000}}, id="huge-integer-in-metadata"),
+    pytest.param({"metadata": {"value": HUGE_INTEGER}}, id="huge-integer-in-metadata"),
     pytest.param({"metadata": {"value": MAX_INTEGER + 1}}, id="integer-past-64-bits-in-metadata"),
     pytest.param({"metadata": {"value": LONE_SURROGATE}}, id="lone-surrogate-in-metadata"),
     pytest.param({"metadata": {"a\x00b": 1}}, id="nul-in-metadata-key"),
@@ -195,7 +196,9 @@ def test_bad_search_limit_is_rejected(notes: Collection, limit: Any) -> None:
         notes.search("Python", limit=limit)
 
 
-@pytest.mark.parametrize("mode", ["", "TEXT", "hybrid", "exact", None, 1])
+@pytest.mark.parametrize(
+    "mode", ["", "TEXT", "hybrid", "exact", None, 1, pytest.param(HUGE_INTEGER, id="huge-integer")]
+)
 def test_bad_search_mode_is_rejected(notes: Collection, mode: Any) -> None:
     with pytest.raises(ValidationError, match="^mode must be"):
         notes.search("Python", mode=mode)
@@ -214,6 +217,10 @@ BAD_FILTERS = [
     pytest.param({"tags": [""]}, "tag must not be empty", id="tags"),
     pytest.param({"tags": ["a\x00b"]}, "tag must not contain a NUL", id="nul-in-tag"),
     pytest.param({"metadata": {"topic": ["food"]}}, "metadata values to match", id="metadata"),
+    pytest.param(
+        {"metadata": {"topic": HUGE_INTEGER}}, "metadata values to match", id="huge-integer"
+    ),
+    pytest.param({"include_archived": HUGE_INTEGER}, "include_archived must be", id="huge-flag"),
     pytest.param(
         {"metadata": {"a\x00b": 1}}, "metadata key must not contain a NUL", id="nul-in-key"
     ),

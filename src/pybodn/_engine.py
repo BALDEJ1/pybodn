@@ -61,9 +61,10 @@ class MemoryEngine:
         seconds, then raises ``StorageError``. ``embedder`` is the embedding model that search by
         meaning uses; it needs NumPy, or this raises ``ConfigurationError``.
 
-        A file from an older pybodn is brought up to date as it opens. A file that cannot be
-        opened, is not pybodn's or comes from a newer pybodn, or whose SQLite lacks full-text
-        search or JSON, raises ``StorageError`` and stays as it was.
+        A file from an older pybodn is brought up to date as it opens. A file that cannot be opened,
+        is not pybodn's, is in a newer file format or holds triggers or views, or whose SQLite lacks
+        full-text search or JSON, raises ``StorageError`` and stays as it was, and so does one with
+        a rollback journal that stays beside it for ``timeout`` seconds.
         """
         checked_path = validate.path(path)
         checked_timeout = validate.timeout(timeout)
@@ -136,11 +137,11 @@ class MemoryEngine:
         A delete, a ``put`` or ``update`` that replaces values, and ``purge_expired`` remove data
         from every read at once, but it stays in the file until this erases what they removed before
         the call. Then a program reading the file itself no longer finds it. Archived records and
-        expired ones not yet purged are still stored, and stay. While it runs, other writers wait,
-        and it needs free disk space up to twice the size of the file. If another connection keeps
-        the file busy all the while, or the file cannot be written, it raises ``StorageError``: the
-        file is intact, deleted data may still be in it, and the call can be made again later. In
-        memory, there is nothing to erase.
+        expired ones not yet purged are still stored, and stay. It needs free disk space up to twice
+        the size of the file, and other writers wait for it up to their timeout, then raise
+        ``StorageError``. If another connection keeps the file busy all the while, or the file
+        cannot be written, it raises ``StorageError``: the file is intact, deleted data may still be
+        in it, and the call can be made again later. In memory, there is nothing to erase.
         """
         self._store.erase_deleted()
 

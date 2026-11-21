@@ -377,8 +377,9 @@ purged before the call. Archived records, and expired records that `purge_expire
 yet, are still stored, so they stay: delete them first to erase them. Searches find the same records
 afterwards.
 
-- Run it now and then, not after every delete. It rewrites the whole file, and other writers wait
-  while it runs, so its time grows with the size of the file, as Speed and size shows.
+- Run it now and then, not after every delete, at a time when nothing else writes. It rewrites the
+  whole file, so its time grows with the size of the file, and other writers wait for it up to their
+  `timeout`, then raise `StorageError`.
 - It needs free disk space up to twice the size of the file.
 - If another connection keeps the file busy for the whole `timeout`, by reading or writing, or the
   file cannot be written, it raises `StorageError`. The file is intact, but deleted data may still
@@ -651,7 +652,7 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
 | `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
 | `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
-| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error, if there is one, is its `__cause__`. |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's, is in a newer file format or holds triggers or views, a rollback journal stays beside it, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error, if there is one, is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
 An unknown keyword argument raises `TypeError`, as it does for any Python function. An error
@@ -707,8 +708,11 @@ namespaces is not limited, and the limits below never get stricter in a 1.x rele
   file stays as it was.
 - The file is marked as pybodn's and carries a schema version. Opening a file made by an older
   pybodn brings it up to date, as Upgrading from an older release describes. A file that is not
-  pybodn's, such as another program's SQLite database, or one made by a newer pybodn, raises
+  pybodn's, such as another program's SQLite database, one in a newer file format, which only pybodn
+  2.0 or later can write, or one holding triggers or views, which pybodn never makes, raises
   `StorageError` and stays exactly as it was.
+- If a rollback journal (`-journal`) stays beside the file for `timeout` seconds, opening raises
+  `StorageError` rather than let SQLite apply it to the file.
 - A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
   next read or write, asking to be restarted, instead of using the file the old way.
 
@@ -753,8 +757,9 @@ with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
 
 ## Data and security
 
-- pybodn does not encrypt the file. On most systems other users of the machine can read it and
-  the files beside it, so keep it in a folder that only your program's user can open.
+- pybodn does not encrypt the file. On most systems other users of the machine can read it and the
+  files beside it, so keep it in a folder that only your program's user can open. Whoever can create
+  files in that folder can also change or destroy the data through the files SQLite keeps there.
 - A namespace keeps records apart but does not guard them: code that has the engine can read
   every namespace.
 - With an embedding model, the content of each record that gets a vector goes to the model, and
@@ -767,7 +772,8 @@ with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
 
 ## Upgrading from an older release
 
-A file from 0.3.0 is already in the format of 1.x, and pybodn opens it without changing it.
+A file from 0.3.0 is already in the format of 1.x, and pybodn opens it without changing it. pybodn
+refuses a file that holds triggers or views, so drop any of your own before you upgrade.
 
 A file from 0.2.0 or 0.1.0 is brought up to date the first time pybodn opens it.
 
@@ -803,8 +809,8 @@ add things, but it keeps what this list covers:
 
 These are not covered and may change in any release:
 
-- Names that start with an underscore, and the classes' constructors: create engines with
-  `sqlite()` and `in_memory()`, and collections with `collection()`.
+- Names that start with an underscore, and the constructors of the engine and collection classes:
+  create engines with `sqlite()` and `in_memory()`, and collections with `collection()`.
 - The text of error messages and of `repr`.
 - How scores are computed, including the numbers under Mixed. Only this is kept: within one
   search, a higher score is a better match.

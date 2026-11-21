@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-21
+
 ### Added
 
+- Code and files made with 1.0 keep working in every 1.x release, as the README section Compatibility describes. A file from 0.3.0 is already in the 1.x format.
 - `MemoryEngine.erase_deleted()` and its async twin erase from the file the data of deleted and purged records and the old values that `put` and `update` replaced, so that a program reading the file itself no longer finds it. If it cannot finish, it raises `StorageError` and the file stays intact; the README section Erase deleted data tells the rest.
-- The README sections Compatibility and Data and security.
+- The README section Data and security.
 - CONTRIBUTING.md, and issue templates for bugs and ideas.
 
 ### Changed
@@ -21,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Opening a file beside which a rollback journal stays for `timeout` seconds raises `StorageError`. SQLite used to apply such a journal, and one planted by anyone who can create files in the folder could destroy the file and delete another file.
+- A file holding triggers or views, which pybodn never makes, or whose schema calls pybodn's own functions, is refused with `StorageError`. Such a file could run SQL of its own in every write.
+- A huge integer given as a flag, a search mode or a metadata value to match raises `ValidationError`, not Python's `ValueError`.
 - Opening a file in a folder that cannot be written raises `StorageError` with SQLite's own reason. It used to say that this Python's SQLite lacked full-text search.
 - The package no longer shows `version`, a function it imported, as one of its names. `pybodn.__version__` stays.
 

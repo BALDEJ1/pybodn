@@ -2,9 +2,11 @@
 anything else is refused and left exactly as it was."""
 
 import sqlite3
+import struct
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,15 @@ from pybodn import MemoryEngine
 from pybodn._storage import schema, sqlite
 from pybodn._words import WORD_RULES
 from pybodn.errors import StorageError
-from tests.sqlite.support import THREADS, WAIT_SECONDS, files_in, make_old_file, run_sql
+from tests.sqlite.support import (
+    RELEASE_AFTER,
+    SHORT_WAIT,
+    THREADS,
+    WAIT_SECONDS,
+    files_in,
+    make_old_file,
+    run_sql,
+)
 
 
 def make_pybodn_file(path: Path) -> None:
@@ -253,6 +263,33 @@ def pybodn_file_with_newer_word_rules(path: Path) -> None:
     run_sql(path, "UPDATE settings SET value = ? WHERE name = 'word_rules'", (WORD_RULES + 1,))
 
 
+def pybodn_file_with_a_trigger(path: Path) -> None:
+    make_pybodn_file(path)
+    run_sql(
+        path,
+        "CREATE TRIGGER overwrite AFTER INSERT ON memories"
+        " BEGIN UPDATE memories SET content = 'overwritten'; END",
+    )
+
+
+def pybodn_file_with_a_view(path: Path) -> None:
+    make_pybodn_file(path)
+    run_sql(path, "CREATE VIEW everything AS SELECT * FROM memories")
+
+
+def pybodn_file_from_the_future_with_a_view(path: Path) -> None:
+    pybodn_file_with_a_view(path)
+    run_sql(path, f"PRAGMA user_version = {len(schema.MIGRATIONS) + 1}")
+
+
+def pybodn_file_whose_schema_calls_pybodn(path: Path) -> None:
+    make_pybodn_file(path)
+    with closing(sqlite3.connect(path)) as connection:
+        connection.create_function("pybodn_words", 1, str, deterministic=True)
+        connection.execute("CREATE INDEX costly ON memories (pybodn_words(content))")
+        connection.commit()
+
+
 REFUSED = [
     pytest.param(text_file, "file is not a database", id="text-file"),
     pytest.param(database_with_a_table, "not a pybodn database", id="table"),
@@ -261,6 +298,13 @@ REFUSED = [
     pytest.param(database_with_a_version_only, "not a pybodn database", id="version-only"),
     pytest.param(pybodn_file_from_the_future, "newer", id="newer-schema"),
     pytest.param(pybodn_file_with_newer_word_rules, "newer", id="newer-word-rules"),
+    pytest.param(pybodn_file_with_a_trigger, "triggers or views", id="pybodn-with-trigger"),
+    pytest.param(pybodn_file_with_a_view, "triggers or views", id="pybodn-with-view"),
+    # a newer file is told to upgrade pybodn first, whatever else it holds
+    pytest.param(pybodn_file_from_the_future_with_a_view, "newer", id="newer-with-view"),
+    pytest.param(
+        pybodn_file_whose_schema_calls_pybodn, "unsafe use", id="pybodn-function-in-schema"
+    ),
 ]
 
 
@@ -342,3 +386,53 @@ def test_an_interrupted_open_closes_its_connection(
     with pytest.raises(KeyboardInterrupt):
         MemoryEngine.sqlite(path)
     assert_closed(opened)
+
+
+JOURNAL_MAGIC = bytes.fromhex("d9d505f920a163d7")
+
+
+def plant_rollback_journal(path: Path, named: Path) -> None:
+    """A rollback journal, as anyone who can create files beside ``path`` could leave it. Applied,
+    it cuts the file to two pages and deletes ``named``, the file it gives as its super-journal."""
+    header = bytearray(512)
+    header[:8] = JOURNAL_MAGIC
+    struct.pack_into(">III", header, 16, 2, 512, 4096)  # pages before, sector and page size
+    name = str(named).encode()
+    trailer = struct.pack(">II", len(name), sum(name)) + JOURNAL_MAGIC
+    Path(f"{path}-journal").write_bytes(bytes(header) + name + trailer)
+
+
+def test_a_rollback_journal_beside_the_file_is_refused_and_applied_to_nothing(
+    path: Path, tmp_path: Path
+) -> None:
+    # Arrange
+    make_pybodn_file(path)
+    named = tmp_path / "elsewhere.txt"
+    named.write_text("keep me")
+    plant_rollback_journal(path, named)
+    before = path.read_bytes()
+    files = files_in(path.parent)
+
+    # Act / Assert
+    with pytest.raises(StorageError, match="journal"):
+        MemoryEngine.sqlite(path, timeout=SHORT_WAIT)
+    assert path.read_bytes() == before
+    assert files_in(path.parent) == files
+    assert named.read_text() == "keep me"
+
+
+def test_opening_waits_for_a_rollback_journal_that_goes_away(path: Path) -> None:
+    # Arrange: a journal there only for a moment, as while another process makes a new file
+    make_pybodn_file(path)
+    journal = Path(f"{path}-journal")
+    journal.write_bytes(b"")
+    removal = threading.Timer(RELEASE_AFTER, journal.unlink)
+    removal.start()
+
+    # Act
+    with MemoryEngine.sqlite(path, timeout=WAIT_SECONDS) as engine:
+        count = engine.collection("user:123").count()
+    removal.join()
+
+    # Assert
+    assert count == 1
