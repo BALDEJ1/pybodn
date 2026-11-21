@@ -68,8 +68,8 @@ def recall(question: str) -> list[str]:
         return [hit.record.content for hit in hits]
 
 
-remember("The user's name is Olena")  # one run of the agent
-print(recall("What is my name?"))  # a later run, after a restart: ["The user's name is Olena"]
+remember("The user's name is Sam")  # one run of the agent
+print(recall("What is my name?"))  # a later run, after a restart: ["The user's name is Sam"]
 ```
 
 ## Engines
@@ -176,7 +176,7 @@ with MemoryEngine.in_memory() as engine:
 
     notes.add_many(
         [
-            NewMemory("Lives in Kyiv", tags=["profile"]),
+            NewMemory("Has two cats", tags=["profile"]),
             NewMemory("Works night shifts", importance=0.3),
         ]
     )
@@ -203,7 +203,7 @@ with MemoryEngine.in_memory() as engine:
     again = notes.add("Allergic to peanuts", tags=["food"], dedupe=True)
     print(again == first, again.tags)  # True ('health',)
 
-    added = notes.add_many([NewMemory("Lives in Kyiv"), NewMemory("Lives in Kyiv")], dedupe=True)
+    added = notes.add_many([NewMemory("Has two cats"), NewMemory("Has two cats")], dedupe=True)
     print(added[0] == added[1], notes.count())  # True 2
 ```
 
@@ -355,10 +355,10 @@ with MemoryEngine.in_memory() as engine:
     notes = engine.collection("user:123")
     old = notes.add("Uses Python 3.11")
     notes.archive(old.id)
-    notes.add("Is in Lviv this week", expires_at=datetime.now(UTC) + timedelta(days=7))
-    notes.add("Was in Odesa last week", expires_at=datetime.now(UTC) - timedelta(days=1))
+    notes.add("Is on vacation this week", expires_at=datetime.now(UTC) + timedelta(days=7))
+    notes.add("Was on a trip last week", expires_at=datetime.now(UTC) - timedelta(days=1))
 
-    print([record.content for record in notes.list()])  # ['Is in Lviv this week']
+    print([record.content for record in notes.list()])  # ['Is on vacation this week']
     print(notes.count(include_archived=True, include_expired=True))  # 3
     print(notes.get(old.id))  # None
     print(notes.restore(old.id).content)  # Uses Python 3.11
@@ -631,7 +631,7 @@ from pybodn import AsyncMemoryEngine
 async def main() -> None:
     async with await AsyncMemoryEngine.sqlite("memory.db") as engine:
         notes = engine.collection("user:123")
-        await asyncio.gather(notes.add("Prefers short answers"), notes.add("Lives in Kyiv"))
+        await asyncio.gather(notes.add("Prefers short answers"), notes.add("Has two cats"))
 
         print(await notes.count())  # 2
         print((await notes.search("answers"))[0].record.content)  # Prefers short answers
