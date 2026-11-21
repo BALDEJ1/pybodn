@@ -166,9 +166,16 @@ def many_namespaces(folder: Path, corpus: Corpus) -> tuple[float, float]:
     return found
 
 
-def hidden(folder: Path, corpus: Corpus) -> tuple[float, float, float]:
+def once(action: Callable[[], object]) -> float:
+    """How long ``action`` takes to run once, in seconds."""
+    started = time.perf_counter()
+    action()
+    return time.perf_counter() - started
+
+
+def hidden(folder: Path, corpus: Corpus) -> tuple[float, float, float, float]:
     """In one namespace of ``HIDDEN`` records, every other one expired: ``count()``, the first
-    page of ``list()``, and ``purge_expired()``, which runs once."""
+    page of ``list()``, then ``purge_expired()`` and ``erase_deleted()``, which run once."""
     path = folder / "hidden.db"
     with MemoryEngine.sqlite(path) as engine:
         notes = engine.collection("user:1")
@@ -179,11 +186,10 @@ def hidden(folder: Path, corpus: Corpus) -> tuple[float, float, float]:
             )
         count = fastest(notes.count)
         page = fastest(lambda: notes.list(limit=LIMIT))
-        started = time.perf_counter()
-        engine.purge_expired()
-        purge = time.perf_counter() - started
+        purge = once(engine.purge_expired)
+        erase = once(engine.erase_deleted)
     path.unlink()
-    return count, page, purge
+    return count, page, purge, erase
 
 
 def awaiting() -> float:
@@ -244,7 +250,7 @@ def main() -> None:
             for dimensions in DIMENSIONS
         }
         rare, common = many_namespaces(folder, corpus)
-        count, page, purge = hidden(folder, corpus)
+        count, page, purge, erase = hidden(folder, corpus)
         opened = {
             release: first_open(folder, corpus, version) for release, version in OLDER.items()
         }
@@ -286,7 +292,8 @@ def main() -> None:
         f"\nAdd of a new text with dedupe=True, in one namespace: {dedupe}."
         f"\nOne namespace of {HIDDEN:,} records, every other one expired:"
         f" count() {duration(count)}, the first page of list() {duration(page)},"
-        f" purge_expired() of {HIDDEN // 2:,} records {duration(purge)}."
+        f" purge_expired() of {HIDDEN // 2:,} records {duration(purge)},"
+        f" then erase_deleted() {duration(erase)}."
         f"\nFirst open of a file of {UPGRADED:,} records from an older pybodn: {upgrades}."
         f"\nAn awaited call takes {awaited * 1e6:.0f} µs longer than the same call straight."
     )

@@ -21,7 +21,14 @@ PUBLIC_NAMES = [
 
 
 def test_the_package_exports_exactly_the_documented_names() -> None:
+    public = {
+        name
+        for name, value in vars(pybodn).items()
+        if not name.startswith("_") and not inspect.ismodule(value)
+    }
     assert sorted(pybodn.__all__) == sorted(PUBLIC_NAMES)
+    # __version__ is in __all__, though its name starts with an underscore.
+    assert public == set(pybodn.__all__) - {"__version__"}
 
 
 @pytest.mark.parametrize("name", PUBLIC_NAMES)
@@ -36,6 +43,7 @@ def test_every_documented_name_can_be_imported(name: str) -> None:
         (MemoryEngine.collection, ["namespace"]),
         (MemoryEngine.embed_missing, []),
         (MemoryEngine.purge_expired, []),
+        (MemoryEngine.erase_deleted, []),
         (Collection.add, ["content"]),
         (Collection.add_many, ["memories"]),
         (Collection.put, ["key", "content"]),

@@ -10,9 +10,10 @@ import unicodedata
 from functools import lru_cache
 
 # A file stores the number its word index was built with, and rebuilds the index on open when
-# that number is older than this one. Raise it whenever words() starts giving different words.
-# What counts as a letter comes from this Python's Unicode data, so a character that only a
-# newer Unicode knows may split differently under an older Python.
+# that number is older than this one. The number is frozen until 2.0, and so are the words that
+# words() gives: every 1.x must search the index any other 1.x built. What counts as a letter
+# comes from this Python's Unicode data, so a character that only a newer Unicode knows may
+# split differently under an older Python.
 WORD_RULES = 1
 
 # Dropped wherever they are, so the letters around them join up: stress marks, which NFKC

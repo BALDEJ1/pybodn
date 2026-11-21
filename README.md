@@ -18,7 +18,7 @@ a memory shared by several servers, because the SQLite file has to stay on one m
 search by meaning over millions of records, because each search compares the query with every
 vector in the namespace.
 
-> **Status: alpha.** The API may still change between 0.x releases.
+Code and files made with 1.0 keep working in every 1.x release, as Compatibility describes.
 
 ## Install
 
@@ -74,9 +74,9 @@ print(recall("What is my name?"))  # a later run, after a restart: ["The user's 
 
 ## Engines
 
-An engine owns the storage. Create one with a factory and use it in `with`, which closes it at
-the end, or call `close()` yourself. Closing twice is safe; any other call after closing raises
-`EngineClosedError`.
+An engine owns the storage. Create one with a factory below, never by calling the class, and use it
+in `with`, which closes it at the end, or call `close()` yourself. Closing twice is safe; any other
+call after closing raises `EngineClosedError`.
 
 | Factory | Keeps records | Shared by |
 |---|---|---|
@@ -310,7 +310,8 @@ with MemoryEngine.in_memory() as engine:
 ### Delete: `delete`
 
 `delete(id)` removes the record and returns `True`, or returns `False` if there was none, so
-calling it twice is safe. The key of a deleted record is free to use again.
+calling it twice is safe. The key of a deleted record is free to use again. Its data stays in the
+file until `engine.erase_deleted()` erases it, as Erase deleted data describes.
 
 ```python
 from pybodn import MemoryEngine
@@ -362,6 +363,40 @@ with MemoryEngine.in_memory() as engine:
     print(notes.get(old.id))  # None
     print(notes.restore(old.id).content)  # Uses Python 3.11
     print(engine.purge_expired())  # 1
+```
+
+### Erase deleted data: `erase_deleted`
+
+A delete hides a record at once, but its data stays in the file until `engine.erase_deleted()`
+erases it. So do the old values that `put` and `update` replace, and the records that
+`purge_expired()` deletes. Until then, a program that reads the file itself, not through pybodn,
+can still find them.
+
+`erase_deleted()` rewrites the file and the log beside it without the data deleted, replaced or
+purged before the call. Archived records, and expired records that `purge_expired()` has not deleted
+yet, are still stored, so they stay: delete them first to erase them. Searches find the same records
+afterwards.
+
+- Run it now and then, not after every delete, at a time when nothing else writes. It rewrites the
+  whole file, so its time grows with the size of the file, and other writers wait for it up to their
+  `timeout`, then raise `StorageError`.
+- It needs free disk space up to twice the size of the file.
+- If another connection keeps the file busy for the whole `timeout`, by reading or writing, or the
+  file cannot be written, it raises `StorageError`. The file is intact, but deleted data may still
+  be in it, so call it again later.
+- It erases the file and its log, and nothing else: copies and backups of the file, the disk
+  under it, which may keep old blocks, and copies that your program or your embedding model's
+  provider made are out of its reach. If you need more, keep the file on an encrypted disk.
+- In memory, there is nothing to erase: a deleted record is gone at once.
+
+```python
+from pybodn import MemoryEngine
+
+with MemoryEngine.sqlite("memory.db") as engine:
+    notes = engine.collection("user:123")
+    notes.delete(notes.add("Phone number is 555-0100").id)
+
+    engine.erase_deleted()  # the number is gone from memory.db and its log
 ```
 
 ## Search
@@ -418,7 +453,8 @@ with MemoryEngine.in_memory() as engine:
 
 Search by meaning finds the records closest in meaning to the query, even with no word in
 common. It needs NumPy, `pip install "pybodn[vector]"`, and an embedding model of your own,
-which turns texts into vectors of numbers. Give the model to the engine as an `Embedder`:
+which turns texts into vectors of numbers. Give the model to the engine as an `Embedder`, a
+plain class to create, not to subclass:
 
 `Embedder(name, embed, *, batch_size=100)`
 
@@ -534,15 +570,18 @@ fastest of five runs.
   grows. With an embedding model it takes 2.7 ms at 10,000 records and 27 ms at 100,000.
 - In a namespace of 100,000 records where every other one has expired, `count()` takes 3.6 ms
   and the first page of `list()` 0.1 ms. `purge_expired()` deletes the 50,000 expired records in
-  1.3 s.
+  1.2 s, and `erase_deleted()` then takes 0.2 s.
 - An async call takes about 30 µs longer than the same sync call, because it runs in a thread.
 
 ## Threads and processes
 
 Any number of threads can share one engine. Processes share an SQLite file, each with an engine
-of its own; an `in_memory()` engine is never shared between processes.
+of its own; an `in_memory()` engine is never shared between processes. After `os.fork()`, the
+child process opens an engine of its own: an engine is never used on both sides of a fork.
 
 - A call that fails writes nothing.
+- Each call is a step of its own: two calls in a row are not one transaction, and another engine
+  may write between them.
 - A change is seen by every engine on the file as soon as the call returns.
 - `put` and `update` read a record and write it back in one step, so changes to one record made
   at the same time are applied one after another, never mixed. `version` counts every one.
@@ -613,17 +652,20 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
 | `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
 | `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
-| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, or another program damaged a record in it. The original error is its `__cause__`. |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's, is in a newer file format or holds triggers or views, a rollback journal stays beside it, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error, if there is one, is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
 An unknown keyword argument raises `TypeError`, as it does for any Python function. An error
-the embedding model raises passes through unchanged.
+the embedding model raises passes through unchanged. A message may name the id, key or namespace
+of a record and quote the start of an invalid value, so log messages with the same care as the
+data.
 
 ## What is checked
 
 Every value is checked before anything is written, the same way for both storages, so data that
 fits in memory also fits in the file. Oversized or self-containing data fails at once with
-`ValidationError` instead of slowing the call down.
+`ValidationError` instead of slowing the call down. The length of `content`, keys, tags and
+namespaces is not limited, and the limits below never get stricter in a 1.x release.
 
 - `namespace`, `content`, keys, ids and tags are non-empty strings. Every string must be
   encodable as UTF-8, so a lone surrogate such as `"\ud800"` is rejected.
@@ -662,12 +704,15 @@ fits in memory also fits in the file. Oversized or self-containing data fails at
 - Besides the records, the file keeps the words of every record, for search by words, and the
   vector of each record that has one.
 - Opening a file needs SQLite with full-text search (FTS5) and JSON, as Python's own builds and
-  the common Linux distributions have; the oldest tested is SQLite 3.34. Without them,
-  `StorageError` says what is missing and the file stays as it was.
+  the common Linux distributions have. Without them, `StorageError` says what is missing and the
+  file stays as it was.
 - The file is marked as pybodn's and carries a schema version. Opening a file made by an older
   pybodn brings it up to date, as Upgrading from an older release describes. A file that is not
-  pybodn's, such as another program's SQLite database, or one made by a newer pybodn, raises
+  pybodn's, such as another program's SQLite database, one in a newer file format, which only pybodn
+  2.0 or later can write, or one holding triggers or views, which pybodn never makes, raises
   `StorageError` and stays exactly as it was.
+- If a rollback journal (`-journal`) stays beside the file for `timeout` seconds, opening raises
+  `StorageError` rather than let SQLite apply it to the file.
 - A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
   next read or write, asking to be restarted, instead of using the file the old way.
 
@@ -693,10 +738,9 @@ with MemoryEngine.sqlite("backup.db") as copy:
     print(copy.collection("user:123").count())  # 1
 ```
 
-To check or compact the file, use SQLite's own commands. `PRAGMA integrity_check` reads the
-whole file and answers `ok` if nothing is damaged. `VACUUM` rewrites the file without the free
-space left by deleted records. It needs as much free disk space as the file takes and holds the
-write lock while it runs, so run it when no engine is writing.
+To check the file, use SQLite's `PRAGMA integrity_check`: it reads the whole file and answers
+`ok` if nothing is damaged. To compact the file and erase deleted data from it, call
+`engine.erase_deleted()`, as Erase deleted data describes.
 
 ```python
 import sqlite3
@@ -709,16 +753,34 @@ with MemoryEngine.sqlite("memory.db") as engine:
 
 with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
     print(connection.execute("PRAGMA integrity_check").fetchone())  # ('ok',)
-    connection.execute("VACUUM")
 ```
+
+## Data and security
+
+- pybodn does not encrypt the file. On most systems other users of the machine can read it and the
+  files beside it, so keep it in a folder that only your program's user can open. Whoever can create
+  files in that folder can also change or destroy the data through the files SQLite keeps there.
+- A namespace keeps records apart but does not guard them: code that has the engine can read
+  every namespace.
+- With an embedding model, the content of each record that gets a vector goes to the model, and
+  so does the query of a search by meaning or a mixed search. Keys, tags, metadata and sources
+  never do.
+- For how deleted data leaves the file, see Erase deleted data.
+- To report a vulnerability, follow the
+  [security policy](https://github.com/BALDEJ1/pybodn/blob/main/SECURITY.md) rather than opening
+  an issue.
 
 ## Upgrading from an older release
 
-pybodn 0.3.0 brings a file from 0.2.0 or 0.1.0 up to date the first time it opens it.
+A file from 0.3.0 is already in the format of 1.x, and pybodn opens it without changing it. pybodn
+refuses a file that holds triggers or views, so drop any of your own before you upgrade.
 
-1. Stop every process that uses the file. A process still running 0.2.0 raises `StorageError` on
-   its next write or search, but its other reads would show records that 0.3.0 hides, and one
-   running 0.1.0 would add records that search never finds.
+A file from 0.2.0 or 0.1.0 is brought up to date the first time pybodn opens it.
+
+1. Stop every process that uses the file, and copy the file, as The SQLite file shows, to have one
+   to go back to. A process still running 0.2.0 raises `StorageError` on its next write or search,
+   but its other reads would show records that pybodn now hides, and one running 0.1.0 would add
+   records that search never finds.
 2. Upgrade pybodn and start the processes again. The first to open the file brings it up to date
    while it holds the file's write lock, on the machine of Speed and size: 0.1 s per 100,000
    records for a file from 0.2.0, which rebuilds two indexes, and 1.1 s for one from 0.1.0, which
@@ -726,6 +788,48 @@ pybodn 0.3.0 brings a file from 0.2.0 or 0.1.0 up to date the first time it open
    `timeout`, then raise `StorageError`, so open a large file once on its own first.
 3. For a file from 0.1.0 with an embedding model, call `engine.embed_missing()` once, so that
    search by meaning finds the records written before.
+
+## Compatibility
+
+pybodn follows [semantic versioning](https://semver.org/). Until 2.0, a release may fix bugs and
+add things, but it keeps what this list covers:
+
+- The names that `pybodn`, `pybodn.errors` and `pybodn.indexes` export.
+- The names, order and defaults of parameters, which of them are passed by name, and what each
+  call returns.
+- The error classes and the classes they inherit from. When a call has more than one problem,
+  the first that applies is raised: a closed engine, then an invalid or unknown argument, then a
+  record that does not exist, then an error of the embedding model, then a version that does not
+  match.
+- The behaviour this README and the docstrings describe.
+- The file format. Every 1.x release reads and writes a file of any other 1.x release, older or
+  newer. A minor release may add a table or a field that an older 1.x does not notice; any other
+  change to the file waits for 2.0.
+- The `vector` extra.
+
+These are not covered and may change in any release:
+
+- Names that start with an underscore, and the constructors of the engine and collection classes:
+  create engines with `sqlite()` and `in_memory()`, and collections with `collection()`.
+- The text of error messages and of `repr`.
+- How scores are computed, including the numbers under Mixed. Only this is kept: within one
+  search, a higher score is a better match.
+- Timings, the number of threads, and the figures under Speed and size.
+- The tables inside the file. Other tools can read them, but their layout may change, and
+  writing to them is not supported.
+- Opening a read-only file to read from it, which works today.
+- Search by words for characters that a newer Unicode added. Which characters are letters comes
+  from the running Python's Unicode data, so an older Python may split a word that holds such a
+  character differently, and not find it.
+
+Before anything covered is removed, it is deprecated: using it gives a `DeprecationWarning` that
+names what to use instead, and it goes only in 2.0. A wrong result is a bug and gets fixed, but
+a fix that could break programs that rely on the wrong result waits for a minor release with a
+warning, or for 2.0. Only the latest release gets fixes.
+
+A Python version stops being supported only after its end of life, in a minor release, with a
+line in the changelog, and the same goes for NumPy versions in the `vector` extra. The oldest
+SQLite tested is 3.34, and pybodn does not check the version.
 
 ## Not in this release
 
@@ -768,18 +872,10 @@ It also has `clear()` and `len(index)`. `get` returns `None` both for a missing 
 stored `None`; use `in` to tell them apart. The index has no lock of its own: if threads share
 it, guard it with one.
 
-## Development
+## Contributing
 
-```bash
-uv sync
-uv run prek install    # secret and workflow checks before each commit
-uv run ruff check
-uv run ruff format --check
-uv run mypy
-uv run coverage run -m pytest
-uv run coverage report
-uv run python -m benchmarks.bench    # the figures under Speed and size, on this machine
-```
+How to set up the project, run its checks and propose a change is in
+[CONTRIBUTING.md](https://github.com/BALDEJ1/pybodn/blob/main/CONTRIBUTING.md).
 
 ## License
 

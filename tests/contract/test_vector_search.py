@@ -354,6 +354,10 @@ FAILING_WRITES: dict[str, Callable[[Collection, str], object]] = {
     "put-new": lambda notes, record_id: notes.put("drink", "кава"),
     "put-existing": lambda notes, record_id: notes.put("food", "кава"),
     "update": lambda notes, record_id: notes.update(record_id, content="кава"),
+    # the model's error comes before the version check, as the README promises
+    "update-stale-version": lambda notes, record_id: notes.update(
+        record_id, content="кава", expected_version=99
+    ),
 }
 
 

@@ -76,6 +76,7 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "modify": lambda store: store.modify("user:123", "id", MISSING_ID, never_build),
     "delete": lambda store: store.delete("user:123", MISSING_ID),
     "purge_expired": lambda store: store.purge_expired(datetime.now(UTC), limit=10),
+    "erase_deleted": lambda store: store.erase_deleted(),
     "list": lambda store: store.list("user:123", where=EVERYTHING, limit=None, offset=0),
     "count": lambda store: store.count("user:123", where=EVERYTHING),
     "search_words": lambda store: store.search_words(
@@ -116,17 +117,14 @@ def test_a_closed_engine_cannot_be_entered_again(engine: MemoryEngine) -> None:
         pass
 
 
-def test_embed_missing_after_close_raises_engine_closed_error(engine: MemoryEngine) -> None:
-    # Closed is reported before the missing model.
+@pytest.mark.parametrize("name", ["embed_missing", "purge_expired", "erase_deleted"])
+def test_an_engine_wide_call_after_close_raises_engine_closed_error(
+    engine: MemoryEngine, name: str
+) -> None:
+    # Closed is reported first, before a missing model too.
     engine.close()
     with pytest.raises(EngineClosedError):
-        engine.embed_missing()
-
-
-def test_purge_expired_after_close_raises_engine_closed_error(engine: MemoryEngine) -> None:
-    engine.close()
-    with pytest.raises(EngineClosedError):
-        engine.purge_expired()
+        getattr(engine, name)()
 
 
 def test_close_can_be_called_again(engine: MemoryEngine) -> None:

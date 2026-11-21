@@ -67,55 +67,55 @@ class AsyncCollection:
     async def add(
         self, content: str, *, dedupe: bool = False, **fields: Unpack[NewMemoryFields]
     ) -> MemoryRecord:
-        """``Collection.add()``."""
+        """Add a record, as ``Collection.add()`` does."""
         return await _in_thread(self._collection.add, content, dedupe=dedupe, **fields)
 
     async def add_many(
         self, memories: Iterable[NewMemory], *, dedupe: bool = False
     ) -> builtins.list[MemoryRecord]:
-        """``Collection.add_many()``."""
+        """Add memories, as ``Collection.add_many()`` does."""
         return await _in_thread(self._collection.add_many, memories, dedupe=dedupe)
 
     async def put(self, key: str, content: str, **fields: Unpack[MemoryFields]) -> MemoryRecord:
-        """``Collection.put()``."""
+        """Put a record by key, as ``Collection.put()`` does."""
         return await _in_thread(self._collection.put, key, content, **fields)
 
     async def get(self, id: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """``Collection.get()``."""
+        """Get a record by id, as ``Collection.get()`` does."""
         return await _in_thread(self._collection.get, id, **options)
 
     async def get_by_key(self, key: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """``Collection.get_by_key()``."""
+        """Get a record by key, as ``Collection.get_by_key()`` does."""
         return await _in_thread(self._collection.get_by_key, key, **options)
 
     async def update(
         self, id: str, *, expected_version: int | None = None, **changes: Unpack[MemoryChanges]
     ) -> MemoryRecord:
-        """``Collection.update()``."""
+        """Update a record, as ``Collection.update()`` does."""
         return await _in_thread(
             self._collection.update, id, expected_version=expected_version, **changes
         )
 
     async def archive(self, id: str) -> MemoryRecord:
-        """``Collection.archive()``."""
+        """Archive a record, as ``Collection.archive()`` does."""
         return await _in_thread(self._collection.archive, id)
 
     async def restore(self, id: str) -> MemoryRecord:
-        """``Collection.restore()``."""
+        """Restore a record, as ``Collection.restore()`` does."""
         return await _in_thread(self._collection.restore, id)
 
     async def delete(self, id: str) -> bool:
-        """``Collection.delete()``."""
+        """Delete a record, as ``Collection.delete()`` does."""
         return await _in_thread(self._collection.delete, id)
 
     async def list(
         self, *, limit: int | None = None, offset: int = 0, **filters: Unpack[Filters]
     ) -> builtins.list[MemoryRecord]:
-        """``Collection.list()``."""
+        """List records, as ``Collection.list()`` does."""
         return await _in_thread(self._collection.list, limit=limit, offset=offset, **filters)
 
     async def count(self, **filters: Unpack[Filters]) -> int:
-        """``Collection.count()``."""
+        """Count records, as ``Collection.count()`` does."""
         return await _in_thread(self._collection.count, **filters)
 
     async def search(
@@ -126,17 +126,18 @@ class AsyncCollection:
         mode: SearchMode = "auto",
         **filters: Unpack[Filters],
     ) -> builtins.list[SearchHit]:
-        """``Collection.search()``."""
+        """Search records, as ``Collection.search()`` does."""
         return await _in_thread(self._collection.search, query, limit=limit, mode=mode, **filters)
 
 
 class AsyncMemoryEngine:
-    """``MemoryEngine`` for asyncio: open it with ``await AsyncMemoryEngine.sqlite(path)`` or
-    ``await AsyncMemoryEngine.in_memory()``, and use it in ``async with``.
+    """``MemoryEngine`` for asyncio.
 
-    Each method does what the method of the same name of ``MemoryEngine`` does, in one of a few
-    threads the event loop has for all its engines. A call given up on, as on a timeout, once
-    begun still runs to its end, so a write may still land.
+    Open it with ``await AsyncMemoryEngine.sqlite(path)`` or
+    ``await AsyncMemoryEngine.in_memory()``, and use it in ``async with``. Each method does what
+    the method of the same name of ``MemoryEngine`` does, in one of a few threads the event loop
+    has for all its engines. A call given up on, as on a timeout, once begun still runs to its
+    end, so a write may still land.
     """
 
     __slots__ = ("_engine",)
@@ -153,25 +154,29 @@ class AsyncMemoryEngine:
         timeout: float = 5.0,
         embedder: Embedder | None = None,
     ) -> Self:
-        """``MemoryEngine.sqlite()``, opened in a thread."""
+        """Open an engine on an SQLite file, as ``MemoryEngine.sqlite()`` does."""
         return cls(await _in_thread(MemoryEngine.sqlite, path, timeout=timeout, embedder=embedder))
 
     @classmethod
     async def in_memory(cls, *, embedder: Embedder | None = None) -> Self:
-        """``MemoryEngine.in_memory()``, opened in a thread."""
+        """Open an engine in memory, as ``MemoryEngine.in_memory()`` does."""
         return cls(await _in_thread(MemoryEngine.in_memory, embedder=embedder))
 
     def collection(self, namespace: str) -> AsyncCollection:
-        """The records of ``namespace``, as ``MemoryEngine.collection()`` gives them."""
+        """Get the records of ``namespace``, as ``MemoryEngine.collection()`` does."""
         return AsyncCollection(self._engine.collection(namespace))
 
     async def embed_missing(self) -> int:
-        """``MemoryEngine.embed_missing()``."""
+        """Embed the records that have no vector, as ``MemoryEngine.embed_missing()`` does."""
         return await _in_thread(self._engine.embed_missing)
 
     async def purge_expired(self) -> int:
-        """``MemoryEngine.purge_expired()``."""
+        """Purge expired records, as ``MemoryEngine.purge_expired()`` does."""
         return await _in_thread(self._engine.purge_expired)
+
+    async def erase_deleted(self) -> None:
+        """Erase deleted data, as ``MemoryEngine.erase_deleted()`` does."""
+        return await _in_thread(self._engine.erase_deleted)
 
     async def close(self) -> None:
         """Close the storage. Safe to call again.

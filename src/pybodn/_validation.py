@@ -148,11 +148,20 @@ def expiry(value: object) -> datetime | None:
     return None if value is None else moment("expires_at", value)
 
 
+def _shown(value: object) -> str:
+    """The start of ``value`` as Python writes it, for a message, or what it is if Python
+    refuses to write it, as for an integer of more digits than Python's limit."""
+    try:
+        return f"{value!r:.40}"
+    except ValueError:
+        return f"a {type(value).__name__} too long to show"
+
+
 def flag(name: str, value: object) -> bool:
     """``True`` or ``False``, and nothing that only counts as one, such as ``1``."""
     if isinstance(value, bool):
         return value
-    raise ValidationError(f"{name} must be True or False, not {value!r:.40}")
+    raise ValidationError(f"{name} must be True or False, not {_shown(value)}")
 
 
 def reject_unknown(method: str, given: Mapping[str, object], known: frozenset[str]) -> None:
@@ -187,7 +196,7 @@ def mode(value: object) -> SearchMode:
     for known in _MODES:
         if isinstance(value, str) and value == known:
             return known
-    raise ValidationError(f"mode must be 'auto', 'text' or 'vector', not {value!r:.40}")
+    raise ValidationError(f"mode must be 'auto', 'text' or 'vector', not {_shown(value)}")
 
 
 def expected_version(value: object) -> int | None:
@@ -281,7 +290,7 @@ def _scalar(value: object) -> JSONScalar:
         return float(value)
     raise ValidationError(
         "metadata values to match must be text, True, False, None, a finite float or an"
-        f" integer that fits in 64 bits, not {value!r:.40}"
+        f" integer that fits in 64 bits, not {_shown(value)}"
     )
 
 

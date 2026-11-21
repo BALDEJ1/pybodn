@@ -2,6 +2,7 @@
 
 import builtins
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -69,7 +70,9 @@ _PAGE = " ORDER BY seq LIMIT ? OFFSET ?"
 _KEY_USED = "SELECT 1 FROM memories WHERE namespace = ? AND memory_key = ?"
 _DELETE = "DELETE FROM memories WHERE namespace = ? AND id = ?"
 _NO_LIMIT = -1  # SQLite's LIMIT for "all the rest"
-_PAUSE = 0.01  # seconds between tries to switch to the write-ahead log
+_PAUSE = 0.01  # seconds between tries while the file is busy
+# Triggers and views would run SQL of the file's own in pybodn's reads and writes.
+_CODE_IN_FILE = "SELECT count(*) FROM sqlite_master WHERE type IN ('trigger', 'view')"
 _BEGIN_WRITE = "BEGIN IMMEDIATE"  # takes the write lock at once, waiting up to the timeout
 _BEGIN_READ = "BEGIN"  # every read until the end sees the file as it was at the first
 
@@ -190,6 +193,14 @@ _PURGE = (
     "DELETE FROM memories WHERE seq IN (SELECT value FROM json_each(?))",
 )
 
+# An erase: the word index written anew with only the words of stored records, which VACUUM alone
+# would not do; the file written anew without the pages deleted data was left on; and the log
+# copied into the file and emptied, which waits for every reader of the log.
+_OPTIMIZE_WORDS = "INSERT INTO memory_words(memory_words) VALUES ('optimize')"
+_VACUUM = "VACUUM"
+_EMPTY_LOG = "PRAGMA wal_checkpoint(TRUNCATE)"
+_NOT_ERASED = "deleted data may still be in the file, which is intact"
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -203,11 +214,12 @@ class SQLiteStore:
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
 
-        A file that is not pybodn's, or is from a newer pybodn, raises ``StorageError`` and is
+        A file that is not pybodn's, or is in a newer file format, raises ``StorageError`` and is
         left as it was.
         """
         self._lock = threading.Lock()
         self._closed = False
+        _wait_for_no_journal(path, timeout)
         with _storage_errors():
             self._connection = sqlite3.connect(
                 path, timeout=timeout, autocommit=True, check_same_thread=False
@@ -215,12 +227,19 @@ class SQLiteStore:
         self._connection.row_factory = sqlite3.Row
         try:
             with _storage_errors():
+                # The file's own schema may not call the functions this connection lends SQLite.
+                # SQLite checks the schema against them as it first reads it, so both come first.
+                self._connection.execute("PRAGMA trusted_schema = OFF").fetchall()
                 self._connection.create_function(
                     "pybodn_words", 1, _indexed_words, deterministic=True
                 )
                 self._connection.create_function(
                     "pybodn_namespace_token", 1, _namespace_token, deterministic=True
                 )
+                # Keep this the first read of the file, so that a file SQLite cannot use, such as
+                # one in a read-only folder, fails here with SQLite's own reason. It also has each
+                # commit flushed to disk before the call returns.
+                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
                 _require_features(self._connection)
                 # two processes never migrate at once
                 with _transaction(self._connection, _BEGIN_WRITE):
@@ -228,8 +247,6 @@ class SQLiteStore:
                     _index_words(self._connection)
                     self._versions = _file_versions(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
-                # Each commit is flushed to disk before the call returns.
-                self._connection.execute("PRAGMA synchronous = FULL").fetchall()
         except BaseException:
             self._connection.close()
             raise
@@ -316,6 +333,21 @@ class SQLiteStore:
                 for statement in _PURGE:
                     self._connection.execute(statement, (given,))
         return len(seqs)
+
+    def erase_deleted(self) -> None:
+        with self._lock:
+            ensure_open(self)
+            try:
+                with self._up_to_date(_BEGIN_WRITE):
+                    self._connection.execute(_OPTIMIZE_WORDS)
+                with _storage_errors():
+                    self._connection.execute(_VACUUM)
+                    busy, _, _ = self._connection.execute(_EMPTY_LOG).fetchone()
+                if busy:
+                    raise StorageError("another connection kept the file busy until the timeout")
+            except StorageError as error:
+                error.add_note(_NOT_ERASED)
+                raise
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
@@ -499,6 +531,8 @@ def _migrate(connection: sqlite3.Connection) -> None:
             f"the file has schema version {version}, newer than the {latest} this pybodn"
             " knows: upgrade pybodn to open it"
         )
+    if _single(connection, _CODE_IN_FILE):
+        raise StorageError("the file holds triggers or views, which pybodn never makes")
     for number in range(version + 1, latest + 1):
         for statement in schema.MIGRATIONS[number - 1]:
             connection.execute(statement)
@@ -507,8 +541,27 @@ def _migrate(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA application_id = {schema.APPLICATION_ID}")
 
 
+def _wait_for_no_journal(path: str, timeout: float) -> None:
+    """Wait up to ``timeout`` for no rollback journal to lie beside the file, then refuse it.
+
+    pybodn's files use the write-ahead log, so a journal is there only while a new file is made, or
+    after a crash in the making. SQLite would apply it to the file on opening, and one planted there
+    can destroy the file and delete another one it names.
+    """
+    journal = f"{path}-journal"
+    deadline = time.monotonic() + timeout
+    while os.path.exists(journal):
+        if time.monotonic() >= deadline:
+            raise StorageError(
+                "a rollback journal lies beside the file, and SQLite would apply it: if no"
+                f" program is making the file now, check where {journal!r} came from, and"
+                " remove it"
+            )
+        time.sleep(_PAUSE)
+
+
 def _require_features(connection: sqlite3.Connection) -> None:
-    """Refuse an SQLite that lacks what the file needs, before the file is touched."""
+    """Refuse an SQLite that lacks what the file needs, before the file is changed."""
     try:
         connection.execute("SELECT json_valid('[]')").fetchall()
         connection.execute(f"CREATE VIRTUAL TABLE temp.trial USING {schema.WORD_INDEX}")
@@ -555,8 +608,7 @@ def _namespace_token(namespace: object) -> str:
 
     The tokenizer keeps hex digits together, so any namespace is one token. FTS5 cuts a token
     longer than 32 KB short, so namespaces longer than 16 KB may share one. Files keep the
-    tokens they were indexed with: a change here must raise ``WORD_RULES``, so that they are
-    indexed again.
+    tokens they were indexed with, so the token stays as it is until 2.0, as ``WORD_RULES`` does.
     """
     return namespace.encode().hex() if isinstance(namespace, str) else ""  # damaged: no token
 

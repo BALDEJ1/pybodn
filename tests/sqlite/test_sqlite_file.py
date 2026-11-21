@@ -11,7 +11,13 @@ import pytest
 from pybodn import Collection, MemoryEngine, NewMemory
 from pybodn._storage.sqlite import SQLiteStore
 from pybodn.errors import StorageError, ValidationError
-from tests.sqlite.support import RELEASE_AFTER, SHORT_WAIT, another_writer, run_sql
+from tests.sqlite.support import (
+    RELEASE_AFTER,
+    SHORT_WAIT,
+    another_writer,
+    needs_read_only,
+    run_sql,
+)
 
 
 def test_records_survive_closing_and_reopening(path: Path) -> None:
@@ -68,6 +74,26 @@ def test_memory_keeps_each_engine_apart_and_nothing_after_close() -> None:
 def test_a_missing_folder_is_a_storage_error(tmp_path: Path) -> None:
     with pytest.raises(StorageError) as caught:
         MemoryEngine.sqlite(tmp_path / "missing" / "memory.db")
+    assert isinstance(caught.value.__cause__, sqlite3.Error)
+
+
+@needs_read_only
+def test_a_file_in_a_read_only_folder_is_a_storage_error_with_sqlites_own_reason(
+    path: Path,
+) -> None:
+    # Arrange
+    MemoryEngine.sqlite(path).close()
+    path.parent.chmod(0o555)
+
+    # Act
+    try:
+        with pytest.raises(StorageError) as caught:
+            MemoryEngine.sqlite(path)
+    finally:
+        path.parent.chmod(0o755)
+
+    # Assert: the folder is to blame, not the SQLite this Python has
+    assert "FTS5" not in str(caught.value)
     assert isinstance(caught.value.__cause__, sqlite3.Error)
 
 
