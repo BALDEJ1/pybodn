@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Opening a file beside which a rollback journal that pybodn did not leave stays for `timeout` seconds raises `StorageError`. SQLite used to apply such a journal, and one planted by anyone who can create files in the folder could destroy the file and delete another file.
+- A file holding triggers or views, which pybodn never makes, or whose schema calls pybodn's own functions, is refused with `StorageError`. Such a file could run SQL of its own in every write.
+- A huge integer given as a flag, a search mode or a metadata value to match raises `ValidationError`, not Python's `ValueError`.
 - Opening a file in a folder that cannot be written raises `StorageError` with SQLite's own reason. It used to say that this Python's SQLite lacked full-text search.
 - The package no longer shows `version`, a function it imported, as one of its names. `pybodn.__version__` stays.
 

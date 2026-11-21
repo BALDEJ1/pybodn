@@ -708,8 +708,11 @@ namespaces is not limited, and the limits below never get stricter in a 1.x rele
   file stays as it was.
 - The file is marked as pybodn's and carries a schema version. Opening a file made by an older
   pybodn brings it up to date, as Upgrading from an older release describes. A file that is not
-  pybodn's, such as another program's SQLite database, or one in a newer file format, which only
-  pybodn 2.0 or later can write, raises `StorageError` and stays exactly as it was.
+  pybodn's, such as another program's SQLite database, one in a newer file format, which only pybodn
+  2.0 or later can write, or one holding triggers or views, which pybodn never makes, raises
+  `StorageError` and stays exactly as it was.
+- If a rollback journal (`-journal`) that pybodn did not leave stays beside the file for `timeout`
+  seconds, opening raises `StorageError` rather than let SQLite apply it to the file.
 - A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
   next read or write, asking to be restarted, instead of using the file the old way.
 
@@ -754,8 +757,9 @@ with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
 
 ## Data and security
 
-- pybodn does not encrypt the file. On most systems other users of the machine can read it and
-  the files beside it, so keep it in a folder that only your program's user can open.
+- pybodn does not encrypt the file. On most systems other users of the machine can read it and the
+  files beside it, so keep it in a folder that only your program's user can open. Whoever can create
+  files in that folder can also change or destroy the data through the files SQLite keeps there.
 - A namespace keeps records apart but does not guard them: code that has the engine can read
   every namespace.
 - With an embedding model, the content of each record that gets a vector goes to the model, and
