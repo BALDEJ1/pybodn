@@ -123,10 +123,10 @@ class MemoryEngine:
         A delete, a ``put`` or ``update`` that replaces values, and ``purge_expired`` hide data at
         once, but it stays in the file until this erases it. Archived records and expired ones
         not yet purged are still stored, and stay. While it runs, other writers wait, and it needs
-        free disk space about the size of the file. If another connection keeps the file busy all
-        the while, or the file cannot be written, it raises ``StorageError``: the file is intact,
-        deleted data may still be in it, and the call can be made again later. In memory, there is
-        nothing to erase.
+        free disk space up to twice the size of the file. If another connection keeps the file
+        busy all the while, or the file cannot be written, it raises ``StorageError``: the file is
+        intact, deleted data may still be in it, and the call can be made again later. In memory,
+        there is nothing to erase.
         """
         self._store.erase_deleted()
 

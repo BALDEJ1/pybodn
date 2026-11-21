@@ -48,15 +48,14 @@ def file_bytes(path: Path) -> bytes:
     return path.read_bytes() + (log.read_bytes() if log.exists() else b"")
 
 
-def assert_in_file(path: Path, traces: Mapping[str, bytes]) -> None:
-    """Every trace is in the file, so that a test cannot pass for want of them."""
-    stored = file_bytes(path)
-    assert [name for name, trace in traces.items() if trace not in stored] == []
-
-
 def left_in_file(path: Path, traces: Mapping[str, bytes]) -> set[str]:
     stored = file_bytes(path)
     return {name for name, trace in traces.items() if trace in stored}
+
+
+def assert_in_file(path: Path, traces: Mapping[str, bytes]) -> None:
+    """Every trace is in the file, so that a test cannot pass for want of them."""
+    assert left_in_file(path, traces) == set(traces)
 
 
 def traces_of(record: MemoryRecord) -> dict[str, bytes]:
@@ -159,8 +158,14 @@ def test_erase_deleted_removes_the_vector_of_a_deleted_record_and_one_replaced(
     assert left == set()
 
 
-def test_erase_deleted_fails_while_another_connection_reads_and_succeeds_when_repeated(
-    path: Path,
+# How another connection holds the file: a reader keeps the log from being emptied, and a writer
+# keeps the erase from starting.
+HOLD = {"reader": "BEGIN", "writer": "BEGIN IMMEDIATE"}
+
+
+@pytest.mark.parametrize("begin", HOLD.values(), ids=HOLD.keys())
+def test_erase_deleted_fails_while_another_connection_holds_the_file_and_succeeds_when_repeated(
+    path: Path, begin: str
 ) -> None:
     with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
         # Arrange
@@ -170,11 +175,11 @@ def test_erase_deleted_fails_while_another_connection_reads_and_succeeds_when_re
         marks = format_marks(path)
         engine.collection(SPACE).delete(record.id)
 
-        # Act: the reader keeps the log from being emptied
-        with closing(sqlite3.connect(path, autocommit=True)) as reader:
-            reader.execute("BEGIN")
-            reader.execute("SELECT count(*) FROM memories").fetchall()
-            with pytest.raises(StorageError):
+        # Act
+        with closing(sqlite3.connect(path, autocommit=True)) as other:
+            other.execute(begin)
+            other.execute("SELECT count(*) FROM memories").fetchall()
+            with pytest.raises(StorageError, match="deleted data may still be in the file"):
                 engine.erase_deleted()
             assert format_marks(path) == marks
             assert run_sql(path, "PRAGMA journal_mode") == [("wal",)]

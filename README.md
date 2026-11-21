@@ -373,14 +373,14 @@ erases it. So do the old values that `put` and `update` replace, and the records
 can still find them.
 
 `erase_deleted()` rewrites the file and the log beside it without the data hidden before the
-call. Archived records,
-and expired records that `purge_expired()` has not deleted yet, are still stored, so they stay:
-delete them first to erase them. Searches find the same records afterwards.
+call. Archived records, and expired records that `purge_expired()` has not deleted yet, are
+still stored, so they stay: delete them first to erase them. Searches find the same records
+afterwards.
 
 - Run it now and then, not after every delete. It rewrites the whole file, and other writers wait
-  while it runs, so its time grows with the size of the file: on the file of Speed and size where
-  50,000 of 100,000 records without vectors were just purged, it takes about 0.2 s.
-- It needs free disk space about the size of the file.
+  while it runs, so its time grows with the size of the file: on the machine of Speed and size,
+  about 0.2 s for 100,000 records without vectors, half of them just purged.
+- It needs free disk space up to twice the size of the file.
 - If another connection keeps the file busy for the whole `timeout`, by reading or writing, or the
   file cannot be written, it raises `StorageError`. The file is intact, but deleted data may still
   be in it, so call it again later.

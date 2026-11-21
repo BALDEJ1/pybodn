@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `MemoryEngine.erase_deleted()` and its async twin. They erase from the file and its log the data of deleted records, the old values that `put` and `update` replaced, and the records that `purge_expired()` deleted, so that a program reading the file itself no longer finds them. Archived records, and expired ones not yet purged, stay. Other writers wait while it runs. If it cannot finish, it raises `StorageError`, the file stays intact, and the call can be made again later. The README section Erase deleted data says what it does not reach. In memory it does nothing.
+- `MemoryEngine.erase_deleted()` and its async twin erase from the file the data of deleted and purged records and the old values that `put` and `update` replaced, so that a program reading the file itself no longer finds it. If it cannot finish, it raises `StorageError` and the file stays intact; the README section Erase deleted data tells the rest.
 
 ### Changed
 
