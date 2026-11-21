@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `MemoryEngine.erase_deleted()` and its async twin erase from the file the data of deleted and purged records and the old values that `put` and `update` replaced, so that a program reading the file itself no longer finds it. If it cannot finish, it raises `StorageError` and the file stays intact; the README section Erase deleted data tells the rest.
-- The README section Compatibility says what every 1.x release keeps, how something is deprecated before it goes, and how long Python, NumPy and SQLite versions are supported. The section Data and security says what pybodn protects and what it sends to the embedding model.
+- The README sections Compatibility and Data and security.
 - CONTRIBUTING.md, and issue templates for bugs and ideas.
 
 ### Changed

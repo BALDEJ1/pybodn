@@ -18,7 +18,7 @@ a memory shared by several servers, because the SQLite file has to stay on one m
 search by meaning over millions of records, because each search compares the query with every
 vector in the namespace.
 
-Every 1.x release keeps the API and the file format of 1.0, as Compatibility describes.
+Code and files made with 1.0 keep working in every 1.x release, as Compatibility describes.
 
 ## Install
 
@@ -378,8 +378,7 @@ yet, are still stored, so they stay: delete them first to erase them. Searches f
 afterwards.
 
 - Run it now and then, not after every delete. It rewrites the whole file, and other writers wait
-  while it runs, so its time grows with the size of the file: on the machine of Speed and size,
-  about 0.2 s for 100,000 records without vectors, half of them just purged.
+  while it runs, so its time grows with the size of the file, as Speed and size shows.
 - It needs free disk space up to twice the size of the file.
 - If another connection keeps the file busy for the whole `timeout`, by reading or writing, or the
   file cannot be written, it raises `StorageError`. The file is intact, but deleted data may still
@@ -754,16 +753,14 @@ with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
 
 ## Data and security
 
-- pybodn does not encrypt the file. SQLite creates it, and the files beside it, with the
-  permissions your process gives new files, which on most systems let other users read them, so
-  keep the file in a folder that only your program's user can open.
+- pybodn does not encrypt the file. On most systems other users of the machine can read it and
+  the files beside it, so keep it in a folder that only your program's user can open.
 - A namespace keeps records apart but does not guard them: code that has the engine can read
   every namespace.
 - With an embedding model, the content of each record that gets a vector goes to the model, and
-  so does the query of every search but one with `mode="text"`. Keys, tags, metadata and sources
+  so does the query of a search by meaning or a mixed search. Keys, tags, metadata and sources
   never do.
-- A delete hides data at once, but only `erase_deleted()` removes it from the file, as Erase
-  deleted data describes.
+- For how deleted data leaves the file, see Erase deleted data.
 - To report a vulnerability, follow the
   [security policy](https://github.com/BALDEJ1/pybodn/blob/main/SECURITY.md) rather than opening
   an issue.
@@ -795,8 +792,9 @@ add things, but it keeps what this list covers:
 - The names, order and defaults of parameters, which of them are passed by name, and what each
   call returns.
 - The error classes and the classes they inherit from. When a call has more than one problem,
-  the first that applies is raised: a closed engine, then an invalid argument, then a record that
-  does not exist, then a version that does not match.
+  the first that applies is raised: a closed engine, then an invalid or unknown argument, then a
+  record that does not exist, then an error of the embedding model, then a version that does not
+  match.
 - The behaviour this README and the docstrings describe.
 - The file format. Every 1.x release reads and writes a file of any other 1.x release, older or
   newer. A minor release may add a table or a field that an older 1.x does not notice; any other
@@ -808,12 +806,12 @@ These are not covered and may change in any release:
 - Names that start with an underscore, and the classes' constructors: create engines with
   `sqlite()` and `in_memory()`, and collections with `collection()`.
 - The text of error messages and of `repr`.
-- The values of scores, beyond what Search says: a higher score is a better match, within one
-  search.
+- How scores are computed, including the numbers under Mixed. Only this is kept: within one
+  search, a higher score is a better match.
 - Timings, the number of threads, and the figures under Speed and size.
 - The tables inside the file. Other tools can read them, but their layout may change, and
   writing to them is not supported.
-- Reading a file that cannot be written, which works today.
+- Opening a read-only file to read from it, which works today.
 - Search by words for characters that a newer Unicode added. Which characters are letters comes
   from the running Python's Unicode data, so an older Python may split a word that holds such a
   character differently, and not find it.
@@ -825,7 +823,7 @@ warning, or for 2.0. Only the latest release gets fixes.
 
 A Python version stops being supported only after its end of life, in a minor release, with a
 line in the changelog, and the same goes for NumPy versions in the `vector` extra. The oldest
-SQLite tested is 3.34. pybodn checks that SQLite has full-text search and JSON, not its version.
+SQLite tested is 3.34, and pybodn does not check the version.
 
 ## Not in this release
 
