@@ -22,7 +22,7 @@ class ValidationError(PyBodnError, ValueError):
 
 
 class RecordNotFoundError(PyBodnError, LookupError):
-    """The record to update does not exist."""
+    """The record to update, archive or restore does not exist."""
 
 
 class DuplicateKeyError(PyBodnError):
@@ -34,7 +34,7 @@ class ConcurrentUpdateError(PyBodnError):
 
 
 class StorageError(PyBodnError):
-    """The storage failed. The original error is the cause."""
+    """The storage failed. The original error, if there is one, is its cause."""
 
 
 class EngineClosedError(PyBodnError):
@@ -46,5 +46,8 @@ class ConfigurationError(PyBodnError):
 
 
 class EmbeddingError(PyBodnError):
-    """The embedding model gave something unusable: not one vector of numbers per text, a vector
-    that cannot be scaled to unit length, or one of another length than its stored vectors."""
+    """The embedding model gave an answer that cannot be used.
+
+    It is not one vector of numbers for each text, or it holds a vector that cannot be scaled to
+    unit length, or one of another length than the model's stored vectors.
+    """

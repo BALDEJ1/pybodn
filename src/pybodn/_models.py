@@ -6,6 +6,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
 from typing import Literal
 
+# A value metadata can hold: what JSON can hold, with string keys.
 type JSONValue = JSONScalar | list[JSONValue] | dict[str, JSONValue]
 
 # A JSON value that is not a list or an object: what a metadata filter compares a field with.
@@ -17,7 +18,16 @@ type SearchMode = Literal["auto", "text", "vector"]
 
 @dataclass(frozen=True, slots=True)
 class NewMemory:
-    """A memory to add. Its fields are validated when it is written."""
+    """A memory to add.
+
+    Its fields are checked when it is written, and a field that fails its check raises
+    ``ValidationError``. ``content`` is a non-empty string, and ``key``, if given, one too.
+    ``metadata`` maps strings to JSON values, within the limits the README gives under What is
+    checked. ``tags`` are non-empty strings without NUL characters, in a list or another iterable,
+    never a single string; a repeated tag is kept once. ``importance`` is a number from 0 to 1.
+    ``source``, any string, says where the memory came from. ``expires_at`` is a ``datetime`` with a
+    time zone: from that moment on, the record is hidden.
+    """
 
     content: str
     _: KW_ONLY
@@ -31,10 +41,13 @@ class NewMemory:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MemoryRecord:
-    """A stored memory. The engine creates it; ``version`` grows with every change.
+    """A stored memory. The engine creates it and gives it a new ``id``.
 
-    ``expires_at`` is when it expires, if ever, and ``archived_at`` when it was archived, if it
-    is: reads leave such a record out unless asked.
+    The fields of ``NewMemory`` are as stored: ``tags`` as a tuple, and every moment in UTC.
+    ``created_at`` and ``updated_at`` are when it was added and last changed, and ``version`` is
+    1 when it is added and grows with every change. ``expires_at`` is when it expires, if ever,
+    and ``archived_at`` when it was archived, if it is: reads leave such a record out unless
+    asked.
     """
 
     id: str
@@ -64,10 +77,12 @@ class SearchHit:
 class Embedder:
     """An embedding model, for search by meaning: ``embed`` turns texts into vectors.
 
-    ``embed`` gets a list of at most ``batch_size`` texts and returns a vector for each, in the
-    same order: a list of numbers, as long for every text. ``name`` names the model and its
-    version: every vector is stored with it, so a model that gives other vectors needs another
-    name.
+    ``embed`` gets a list of texts, at most ``batch_size`` at a time, and returns a vector for
+    each, in the same order: a list, tuple or array of numbers, as long for every text. An
+    error it raises passes through unchanged, and an answer that cannot be used raises
+    ``EmbeddingError``. ``batch_size`` is an integer from 1.
+    ``name``, a non-empty string, names the model and its version: every vector is stored with
+    it, so a model that gives other vectors needs another name.
     """
 
     name: str

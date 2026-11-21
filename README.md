@@ -372,9 +372,9 @@ erases it. So do the old values that `put` and `update` replace, and the records
 `purge_expired()` deletes. Until then, a program that reads the file itself, not through pybodn,
 can still find them.
 
-`erase_deleted()` rewrites the file and the log beside it without the data hidden before the
-call. Archived records, and expired records that `purge_expired()` has not deleted yet, are
-still stored, so they stay: delete them first to erase them. Searches find the same records
+`erase_deleted()` rewrites the file and the log beside it without the data deleted, replaced or
+purged before the call. Archived records, and expired records that `purge_expired()` has not deleted
+yet, are still stored, so they stay: delete them first to erase them. Searches find the same records
 afterwards.
 
 - Run it now and then, not after every delete. It rewrites the whole file, and other writers wait
@@ -648,7 +648,7 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
 | `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
 | `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
-| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error is its `__cause__`. |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or comes from a newer pybodn, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error, if there is one, is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
 An unknown keyword argument raises `TypeError`, as it does for any Python function. An error

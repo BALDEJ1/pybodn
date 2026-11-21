@@ -75,7 +75,8 @@ class Collection:
     for them. Writes still reach them, and a hidden record keeps its key until it is deleted.
 
     With an embedding model, every write of a new text asks the model for its vector first,
-    outside the store's lock, and writes nothing if the model fails.
+    outside the store's lock, and writes nothing if the model fails, as ``Embedder`` describes.
+    The other errors every method may raise are those ``MemoryEngine`` names.
     """
 
     __slots__ = ("_clock", "_namespace", "_store", "_vectorize")
@@ -98,7 +99,11 @@ class Collection:
     def add(
         self, content: str, *, dedupe: bool = False, **fields: Unpack[NewMemoryFields]
     ) -> MemoryRecord:
-        """Add a record. The same as ``add_many([NewMemory(content, ...)], dedupe=...)[0]``."""
+        """Add a record.
+
+        ``content`` and the fields passed by name are those of ``NewMemory``. The same as
+        ``add_many([NewMemory(content, **fields)], dedupe=dedupe)[0]``, with the same errors.
+        """
         ensure_open(self._store)
         validate.reject_unknown("add", fields, NewMemoryFields.__optional_keys__)
         return self.add_many([NewMemory(content, **fields)], dedupe=dedupe)[0]
@@ -106,14 +111,16 @@ class Collection:
     def add_many(
         self, memories: Iterable[NewMemory], *, dedupe: bool = False
     ) -> builtins.list[MemoryRecord]:
-        """Add every memory, or none if any of them fails. Returns a record for each, in the
-        same order.
+        """Add every memory, or none if any of them fails.
 
-        With ``dedupe=True``, a memory is not added if the namespace shows a record with the
-        same text and the same key, or both without one, or if an earlier memory of the batch
-        has them. That record comes back in its place, as stored: the memory's other fields are
-        not applied. Texts must match in every character. Archived and expired records are no
-        copies, but still hold their keys.
+        Returns a record for each, in the same order. With ``dedupe=True``, a memory is not
+        added if the namespace shows a record with the same text and the same key, or both
+        without one, or if an earlier memory of the batch has them. That record comes back in
+        its place, as stored: the memory's other fields are not applied. Texts must match in
+        every character. Archived and expired records are no copies, but still hold their keys.
+
+        Raises ``DuplicateKeyError`` if a memory it writes has a key that the namespace already
+        uses, even on a hidden record, or that another memory it writes has.
         """
         ensure_open(self._store)
         checked_dedupe = validate.flag("dedupe", dedupe)
@@ -129,8 +136,10 @@ class Collection:
     def put(self, key: str, content: str, **fields: Unpack[MemoryFields]) -> MemoryRecord:
         """Create the record with ``key``, or replace every field of it.
 
-        A field not passed gets its default. A replaced record keeps its id, creation
-        time and place in ``list()``, and comes back from the archive.
+        ``content`` and the fields passed by name are those of ``NewMemory`` other than ``key``,
+        and a field not passed gets its default. A replaced record keeps its id, creation time
+        and place in ``list()``, and comes back from the archive. Its old values stay in the file
+        until ``MemoryEngine.erase_deleted()``.
         """
         ensure_open(self._store)
         validate.reject_unknown("put", fields, MemoryFields.__optional_keys__)
@@ -153,23 +162,35 @@ class Collection:
         return self._store.modify(self._namespace, "key", checked_key, build, vector=vector)
 
     def get(self, id: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """The record with this id, or ``None``; a hidden one only if the options ask for it."""
+        """The record with ``id``, or ``None``.
+
+        A hidden record comes back only if ``include_archived=True`` or ``include_expired=True``
+        asks for it.
+        """
         ensure_open(self._store)
         return self._get("get", "id", validate.text("id", id), options)
 
     def get_by_key(self, key: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """The record with this key, or ``None``; a hidden one only if the options ask for it."""
+        """The record with ``key``, or ``None``.
+
+        A hidden record comes back only if ``include_archived=True`` or ``include_expired=True``
+        asks for it.
+        """
         ensure_open(self._store)
         return self._get("get_by_key", "key", validate.text("key", key), options)
 
     def update(
         self, id: str, *, expected_version: int | None = None, **changes: Unpack[MemoryChanges]
     ) -> MemoryRecord:
-        """Change only the fields passed. ``source=None`` clears the source, and
-        ``expires_at=None`` the expiry. An archived record stays archived.
+        """Change only the fields passed by name.
 
-        Raises ``RecordNotFoundError`` if there is no such record, and
-        ``ConcurrentUpdateError`` if ``expected_version`` is not the record's version.
+        They are those of ``NewMemory`` other than ``key``, at least one. ``source=None`` clears
+        the source, and ``expires_at=None`` the expiry. An archived record stays archived. The
+        old values stay in the file until ``MemoryEngine.erase_deleted()``.
+
+        With ``expected_version``, the record changes only if it is still at that version.
+        Raises ``RecordNotFoundError`` if there is no such record, and ``ConcurrentUpdateError``
+        if ``expected_version`` is not the record's version.
         """
         ensure_open(self._store)
         checked = _check_changes(changes)
@@ -191,28 +212,38 @@ class Collection:
         return self._store.modify(self._namespace, "id", checked_id, build, vector=vector)
 
     def archive(self, id: str) -> MemoryRecord:
-        """Hide the record from every read until ``restore()`` or ``put()``. Archiving it again
-        changes nothing. Raises ``RecordNotFoundError`` if there is no such record."""
+        """Hide the record from reads until ``restore()`` or ``put()``.
+
+        It stays stored, and ``MemoryEngine.erase_deleted()`` keeps it. Archiving it again
+        changes nothing. Raises ``RecordNotFoundError`` if there is no such record.
+        """
         ensure_open(self._store)
         return self._set_archived(validate.text("id", id), archived=True)
 
     def restore(self, id: str) -> MemoryRecord:
-        """Bring the record back from the archive. Restoring one not archived changes nothing.
-        Raises ``RecordNotFoundError`` if there is no such record."""
+        """Bring the record back from the archive.
+
+        Restoring one not archived changes nothing. Raises ``RecordNotFoundError`` if there is
+        no such record.
+        """
         ensure_open(self._store)
         return self._set_archived(validate.text("id", id), archived=False)
 
     def delete(self, id: str) -> bool:
-        """Remove the record. ``False`` if there was none, so repeating is safe."""
+        """Remove the record and return ``True``, or ``False`` if there was none.
+
+        Repeating is safe. Its data stays in the file until ``MemoryEngine.erase_deleted()``.
+        """
         ensure_open(self._store)
         return self._store.delete(self._namespace, validate.text("id", id))
 
     def list(
         self, *, limit: int | None = None, offset: int = 0, **filters: Unpack[Filters]
     ) -> builtins.list[MemoryRecord]:
-        """Records in the order they were added. ``limit`` and ``offset`` select a page.
+        """Records in the order they were added.
 
-        Filters keep only the records that pass every one given; ``None`` sets no condition.
+        ``limit``, ``None`` or an integer from 1, and ``offset``, an integer from 0, select a
+        page. Filters keep only the records that pass every one given; ``None`` sets no condition.
 
         - ``tags``: has all these tags (at most 100).
         - ``metadata``: each of these top-level fields (at most 100) is there and equals its
@@ -244,17 +275,21 @@ class Collection:
         mode: SearchMode = "auto",
         **filters: Unpack[Filters],
     ) -> builtins.list[SearchHit]:
-        """The records that best match ``query``, best first: at most ``limit`` of them.
+        """The records that best match ``query``, best first.
+
+        At most ``limit`` records come back, and ``limit`` is an integer from 1. A query of more
+        than 100 different words raises ``ValidationError``, unless ``mode="vector"``, which
+        does not count words.
 
         ``mode="text"`` searches by words. A record matches if it holds any word of the query,
         in any case, with or without stress marks and apostrophes. A word also finds its forms
         with another ending: "алергії" finds "алергія". More of the query's words, rarer words
         and the exact forms rank a record higher.
 
-        ``mode="vector"`` searches by meaning, and needs the engine's embedding model: the
-        records whose vectors are closest to the query's come first, however far, each scored
-        by its similarity to the query from -1 to 1. A record without a vector of the model is
-        not found: see ``MemoryEngine.embed_missing()``.
+        ``mode="vector"`` searches by meaning, with the engine's embedding model, and raises
+        ``ConfigurationError`` without one. The records whose vectors are closest to the query's
+        come first, however far, each scored by its similarity to the query from -1 to 1. A
+        record without a vector of the model is not found: see ``MemoryEngine.embed_missing()``.
 
         ``mode="auto"``, the default, searches by words, and with an embedding model by meaning
         too, and mixes the two by reciprocal rank fusion: a record found both ways rises, and
