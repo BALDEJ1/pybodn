@@ -652,7 +652,7 @@ Every error pybodn raises is in `pybodn.errors` and is a `PyBodnError`.
 | `ConcurrentUpdateError` | `update` gets an `expected_version` that is not the record's version |
 | `ConfigurationError` | the engine is not set up for what was asked: `mode="vector"` or `embed_missing()` without an embedding model, or a model without NumPy installed |
 | `EmbeddingError` | the model's answer is unusable: not one vector of numbers for each text, a vector that cannot be scaled to unit length, such as all zeros, or one of another length than the model's stored vectors |
-| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's or is in a newer file format, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error, if there is one, is its `__cause__`. |
+| `StorageError` | the storage fails: the file cannot be opened, a write waited longer than `timeout`, the file is not pybodn's, is in a newer file format or holds triggers or views, a rollback journal stays beside it, its SQLite lacks full-text search or JSON, a newer pybodn upgraded it after this process opened it, another program damaged a record in it, or `erase_deleted()` could not finish. The original error, if there is one, is its `__cause__`. |
 | `EngineClosedError` | the engine is used after `close()` |
 
 An unknown keyword argument raises `TypeError`, as it does for any Python function. An error
@@ -711,8 +711,8 @@ namespaces is not limited, and the limits below never get stricter in a 1.x rele
   pybodn's, such as another program's SQLite database, one in a newer file format, which only pybodn
   2.0 or later can write, or one holding triggers or views, which pybodn never makes, raises
   `StorageError` and stays exactly as it was.
-- If a rollback journal (`-journal`) that pybodn did not leave stays beside the file for `timeout`
-  seconds, opening raises `StorageError` rather than let SQLite apply it to the file.
+- If a rollback journal (`-journal`) stays beside the file for `timeout` seconds, opening raises
+  `StorageError` rather than let SQLite apply it to the file.
 - A process that opened the file before a newer pybodn upgraded it raises `StorageError` on its
   next read or write, asking to be restarted, instead of using the file the old way.
 
@@ -772,7 +772,8 @@ with closing(sqlite3.connect("memory.db", autocommit=True)) as connection:
 
 ## Upgrading from an older release
 
-A file from 0.3.0 is already in the format of 1.x, and pybodn opens it without changing it.
+A file from 0.3.0 is already in the format of 1.x, and pybodn opens it without changing it. pybodn
+refuses a file that holds triggers or views, so drop any of your own before you upgrade.
 
 A file from 0.2.0 or 0.1.0 is brought up to date the first time pybodn opens it.
 

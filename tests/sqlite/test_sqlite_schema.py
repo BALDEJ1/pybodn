@@ -277,6 +277,11 @@ def pybodn_file_with_a_view(path: Path) -> None:
     run_sql(path, "CREATE VIEW everything AS SELECT * FROM memories")
 
 
+def pybodn_file_from_the_future_with_a_view(path: Path) -> None:
+    pybodn_file_with_a_view(path)
+    run_sql(path, f"PRAGMA user_version = {len(schema.MIGRATIONS) + 1}")
+
+
 def pybodn_file_whose_schema_calls_pybodn(path: Path) -> None:
     make_pybodn_file(path)
     with closing(sqlite3.connect(path)) as connection:
@@ -295,6 +300,8 @@ REFUSED = [
     pytest.param(pybodn_file_with_newer_word_rules, "newer", id="newer-word-rules"),
     pytest.param(pybodn_file_with_a_trigger, "triggers or views", id="pybodn-with-trigger"),
     pytest.param(pybodn_file_with_a_view, "triggers or views", id="pybodn-with-view"),
+    # a newer file is told to upgrade pybodn first, whatever else it holds
+    pytest.param(pybodn_file_from_the_future_with_a_view, "newer", id="newer-with-view"),
     pytest.param(
         pybodn_file_whose_schema_calls_pybodn, "unsafe use", id="pybodn-function-in-schema"
     ),

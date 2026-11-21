@@ -525,14 +525,14 @@ def _migrate(connection: sqlite3.Connection) -> None:
     is_empty = _single(connection, "SELECT count(*) FROM sqlite_master") == 0
     if application_id != schema.APPLICATION_ID and not (is_new and is_empty):
         raise StorageError("the file is not a pybodn database")
-    if _single(connection, _CODE_IN_FILE):
-        raise StorageError("the file holds triggers or views, which pybodn never makes")
     latest = len(schema.MIGRATIONS)
     if version > latest:
         raise StorageError(
             f"the file has schema version {version}, newer than the {latest} this pybodn"
             " knows: upgrade pybodn to open it"
         )
+    if _single(connection, _CODE_IN_FILE):
+        raise StorageError("the file holds triggers or views, which pybodn never makes")
     for number in range(version + 1, latest + 1):
         for statement in schema.MIGRATIONS[number - 1]:
             connection.execute(statement)
@@ -544,17 +544,18 @@ def _migrate(connection: sqlite3.Connection) -> None:
 def _wait_for_no_journal(path: str, timeout: float) -> None:
     """Wait up to ``timeout`` for no rollback journal to lie beside the file, then refuse it.
 
-    pybodn's files use the write-ahead log, so a journal is there only for a moment, while a new
-    file is made. One that stays was left by something else, and SQLite would apply it to the
-    file on opening, which can destroy the file and delete another one the journal names.
+    pybodn's files use the write-ahead log, so a journal is there only while a new file is made, or
+    after a crash in the making. SQLite would apply it to the file on opening, and one planted there
+    can destroy the file and delete another one it names.
     """
     journal = f"{path}-journal"
     deadline = time.monotonic() + timeout
     while os.path.exists(journal):
         if time.monotonic() >= deadline:
             raise StorageError(
-                "a rollback journal that pybodn did not leave lies beside the file, and SQLite"
-                f" would apply it: check where {journal!r} came from, and remove it"
+                "a rollback journal lies beside the file, and SQLite would apply it: if no"
+                f" program is making the file now, check where {journal!r} came from, and"
+                " remove it"
             )
         time.sleep(_PAUSE)
 

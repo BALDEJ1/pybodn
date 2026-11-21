@@ -62,8 +62,9 @@ class MemoryEngine:
         meaning uses; it needs NumPy, or this raises ``ConfigurationError``.
 
         A file from an older pybodn is brought up to date as it opens. A file that cannot be opened,
-        is not pybodn's or is in a newer file format, or whose SQLite lacks full-text search or
-        JSON, raises ``StorageError`` and stays as it was.
+        is not pybodn's, is in a newer file format or holds triggers or views, or whose SQLite lacks
+        full-text search or JSON, raises ``StorageError`` and stays as it was, and so does one with
+        a rollback journal that stays beside it for ``timeout`` seconds.
         """
         checked_path = validate.path(path)
         checked_timeout = validate.timeout(timeout)
