@@ -131,12 +131,13 @@ class AsyncCollection:
 
 
 class AsyncMemoryEngine:
-    """``MemoryEngine`` for asyncio: open it with ``await AsyncMemoryEngine.sqlite(path)`` or
-    ``await AsyncMemoryEngine.in_memory()``, and use it in ``async with``.
+    """``MemoryEngine`` for asyncio.
 
-    Each method does what the method of the same name of ``MemoryEngine`` does, in one of a few
-    threads the event loop has for all its engines. A call given up on, as on a timeout, once
-    begun still runs to its end, so a write may still land.
+    Open it with ``await AsyncMemoryEngine.sqlite(path)`` or
+    ``await AsyncMemoryEngine.in_memory()``, and use it in ``async with``. Each method does what
+    the method of the same name of ``MemoryEngine`` does, in one of a few threads the event loop
+    has for all its engines. A call given up on, as on a timeout, once begun still runs to its
+    end, so a write may still land.
     """
 
     __slots__ = ("_engine",)

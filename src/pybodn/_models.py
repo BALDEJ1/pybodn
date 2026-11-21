@@ -18,15 +18,15 @@ type SearchMode = Literal["auto", "text", "vector"]
 
 @dataclass(frozen=True, slots=True)
 class NewMemory:
-    """A memory to add. Its fields are checked when it is written, and a field that fails its
-    check raises ``ValidationError``.
+    """A memory to add.
 
-    ``content`` is a non-empty string, and ``key``, if given, one too. ``metadata`` maps strings to
-    JSON values, within the limits the README gives under What is checked. ``tags`` are non-empty
-    strings without NUL characters, in a list or another iterable, never a single string; a repeated
-    tag is kept once. ``importance`` is a number from 0 to 1. ``source``, any string, says where the
-    memory came from. ``expires_at`` is a ``datetime`` with a time zone: from that moment on, the
-    record is hidden.
+    Its fields are checked when it is written, and a field that fails its check raises
+    ``ValidationError``. ``content`` is a non-empty string, and ``key``, if given, one too.
+    ``metadata`` maps strings to JSON values, within the limits the README gives under What is
+    checked. ``tags`` are non-empty strings without NUL characters, in a list or another iterable,
+    never a single string; a repeated tag is kept once. ``importance`` is a number from 0 to 1.
+    ``source``, any string, says where the memory came from. ``expires_at`` is a ``datetime`` with a
+    time zone: from that moment on, the record is hidden.
     """
 
     content: str

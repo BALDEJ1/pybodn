@@ -46,5 +46,8 @@ class ConfigurationError(PyBodnError):
 
 
 class EmbeddingError(PyBodnError):
-    """The embedding model gave something unusable: not one vector of numbers per text, a vector
-    that cannot be scaled to unit length, or one of another length than its stored vectors."""
+    """The embedding model gave an answer that cannot be used.
+
+    It is not one vector of numbers for each text, or it holds a vector that cannot be scaled to
+    unit length, or one of another length than the model's stored vectors.
+    """
