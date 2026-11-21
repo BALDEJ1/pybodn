@@ -23,13 +23,13 @@ def _utc_now() -> datetime:
 
 
 class MemoryEngine:
-    """Stores memories. Create it with ``MemoryEngine.sqlite(path)`` or
-    ``MemoryEngine.in_memory()``, and use it in ``with``.
+    """Stores memories.
 
-    The engine owns its storage: ``close()`` closes it, and any use after that raises
+    Create it with ``MemoryEngine.sqlite(path)`` or ``MemoryEngine.in_memory()``, and use it in
+    ``with``. The engine owns its storage: ``close()`` closes it, and any use after that raises
     ``EngineClosedError``. Every method of the engine and of its collections raises
-    ``ValidationError`` for an invalid argument, naming it, ``TypeError`` for an unknown keyword
-    argument, and ``StorageError`` if the storage fails.
+    ``ValidationError`` for an invalid argument, ``TypeError`` for an unknown keyword argument,
+    and ``StorageError`` if the storage fails.
     """
 
     __slots__ = ("_clock", "_embedder", "_store", "_vectorize")
@@ -54,13 +54,12 @@ class MemoryEngine:
         timeout: float = 5.0,
         embedder: Embedder | None = None,
     ) -> Self:
-        """An engine that keeps records in the SQLite file at ``path``, a string or path
-        object, made if missing. ``":memory:"`` keeps records in memory until the engine is
-        closed.
+        """An engine that keeps records in the SQLite file at ``path``, made if missing.
 
-        While another write holds the file, a write waits up to ``timeout`` seconds, from 0 to
-        2,147,483, then raises ``StorageError``. ``embedder`` is the embedding model that search
-        by meaning uses; it needs NumPy, or this raises ``ConfigurationError``.
+        ``path`` is a string or path object, and ``":memory:"`` keeps records in memory until the
+        engine is closed. While another write holds the file, a write waits up to ``timeout``
+        seconds, then raises ``StorageError``. ``embedder`` is the embedding model that search by
+        meaning uses; it needs NumPy, or this raises ``ConfigurationError``.
 
         A file from an older pybodn is brought up to date as it opens. A file that cannot be
         opened, is not pybodn's or comes from a newer pybodn, or whose SQLite lacks full-text
@@ -82,27 +81,26 @@ class MemoryEngine:
         return cls(InMemoryStore(), embedder=checked_embedder)
 
     def collection(self, namespace: str) -> Collection:
-        """The records of ``namespace``, a non-empty string. Namespaces never see each other's
-        records."""
+        """The records of ``namespace``, a non-empty string.
+
+        Namespaces never see each other's records.
+        """
         ensure_open(self._store)
         return Collection(
             self._store, validate.text("namespace", namespace), self._clock, self._vectorize
         )
 
     def embed_missing(self) -> int:
-        """Give a vector of the engine's model to every record that has none, in every
-        namespace, and return how many got one.
+        """Give a vector of the engine's model to every record without one, and return how many.
 
-        Records get no vector when an engine without the model writes them, and the vectors
-        of another model are replaced: this is how to move to a new model. Records go to the
-        model ``batch_size`` at a time, in the order added, up to the last record there was
-        at the start, and each batch is written as soon as the model answers: if the model
-        fails, the batches before stay written. A record whose text changes meanwhile keeps
-        no vector of its old text, and waits for the next call.
+        It covers every namespace. Records get no vector when an engine without the model writes
+        them, and the vectors of another model are replaced: this is how to move to a new model.
+        Records go to the model ``batch_size`` at a time, in the order added, up to the last record
+        there was at the start, and each batch is written as soon as the model answers: if the model
+        fails, the batches before stay written. A record whose text changes meanwhile keeps no
+        vector of its old text, and waits for the next call.
 
-        Raises ``ConfigurationError`` if the engine has no model. An error the model raises
-        passes through as it is, and an answer it gives that cannot be used raises
-        ``EmbeddingError``.
+        Raises ``ConfigurationError`` if the engine has no model.
         """
         ensure_open(self._store)
         embedder, vectorize = self._embedder, self._vectorize
@@ -133,16 +131,16 @@ class MemoryEngine:
         return purged
 
     def erase_deleted(self) -> None:
-        """Erase from the file and its log the data hidden before the call, so that a program
-        reading the file itself no longer finds it.
+        """Erase deleted data from the file and its log.
 
-        A delete, a ``put`` or ``update`` that replaces values, and ``purge_expired`` hide data at
-        once, but it stays in the file until this erases it. Archived records and expired ones
-        not yet purged are still stored, and stay. While it runs, other writers wait, and it needs
-        free disk space up to twice the size of the file. If another connection keeps the file
-        busy all the while, or the file cannot be written, it raises ``StorageError``: the file is
-        intact, deleted data may still be in it, and the call can be made again later. In memory,
-        there is nothing to erase.
+        A delete, a ``put`` or ``update`` that replaces values, and ``purge_expired`` remove data
+        from every read at once, but it stays in the file until this erases what they removed before
+        the call. Then a program reading the file itself no longer finds it. Archived records and
+        expired ones not yet purged are still stored, and stay. While it runs, other writers wait,
+        and it needs free disk space up to twice the size of the file. If another connection keeps
+        the file busy all the while, or the file cannot be written, it raises ``StorageError``: the
+        file is intact, deleted data may still be in it, and the call can be made again later. In
+        memory, there is nothing to erase.
         """
         self._store.erase_deleted()
 

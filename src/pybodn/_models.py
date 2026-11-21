@@ -21,14 +21,12 @@ class NewMemory:
     """A memory to add. Its fields are checked when it is written, and a field that fails its
     check raises ``ValidationError``.
 
-    ``content`` is a non-empty string, and ``key``, if given, one that no other record of the
-    namespace holds. ``metadata`` maps strings to JSON values: at most 100 levels deep,
-    1,000,000 values and 16 MB of text in all, integers that fit in 64 bits, and no NUL
-    character in any key or text. ``tags`` are non-empty strings without NUL characters, in a
-    list or another iterable, never a single string; a repeated tag is kept once.
-    ``importance`` is a number from 0 to 1. ``source``, any string, says where the memory came
-    from. ``expires_at`` is a ``datetime`` with a time zone: from that moment on, the record is
-    hidden.
+    ``content`` is a non-empty string, and ``key``, if given, one too. ``metadata`` maps strings to
+    JSON values, within the limits the README gives under What is checked. ``tags`` are non-empty
+    strings without NUL characters, in a list or another iterable, never a single string; a repeated
+    tag is kept once. ``importance`` is a number from 0 to 1. ``source``, any string, says where the
+    memory came from. ``expires_at`` is a ``datetime`` with a time zone: from that moment on, the
+    record is hidden.
     """
 
     content: str
@@ -43,7 +41,7 @@ class NewMemory:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MemoryRecord:
-    """A stored memory. The engine creates it, with an ``id`` of its own.
+    """A stored memory. The engine creates it and gives it a new ``id``.
 
     The fields of ``NewMemory`` are as stored: ``tags`` as a tuple, and every moment in UTC.
     ``created_at`` and ``updated_at`` are when it was added and last changed, and ``version`` is
@@ -81,7 +79,8 @@ class Embedder:
 
     ``embed`` gets a list of texts, at most ``batch_size`` at a time, and returns a vector for
     each, in the same order: a list, tuple or array of numbers, as long for every text. An
-    answer that cannot be used raises ``EmbeddingError``. ``batch_size`` is an integer from 1.
+    error it raises passes through unchanged, and an answer that cannot be used raises
+    ``EmbeddingError``. ``batch_size`` is an integer from 1.
     ``name``, a non-empty string, names the model and its version: every vector is stored with
     it, so a model that gives other vectors needs another name.
     """

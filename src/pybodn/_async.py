@@ -73,49 +73,49 @@ class AsyncCollection:
     async def add_many(
         self, memories: Iterable[NewMemory], *, dedupe: bool = False
     ) -> builtins.list[MemoryRecord]:
-        """Add every memory, or none, as ``Collection.add_many()`` does."""
+        """Add memories, as ``Collection.add_many()`` does."""
         return await _in_thread(self._collection.add_many, memories, dedupe=dedupe)
 
     async def put(self, key: str, content: str, **fields: Unpack[MemoryFields]) -> MemoryRecord:
-        """Create or replace the record with ``key``, as ``Collection.put()`` does."""
+        """Put a record by key, as ``Collection.put()`` does."""
         return await _in_thread(self._collection.put, key, content, **fields)
 
     async def get(self, id: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """The record with ``id``, or ``None``, as ``Collection.get()`` gives it."""
+        """Get a record by id, as ``Collection.get()`` does."""
         return await _in_thread(self._collection.get, id, **options)
 
     async def get_by_key(self, key: str, **options: Unpack[Visibility]) -> MemoryRecord | None:
-        """The record with ``key``, or ``None``, as ``Collection.get_by_key()`` gives it."""
+        """Get a record by key, as ``Collection.get_by_key()`` does."""
         return await _in_thread(self._collection.get_by_key, key, **options)
 
     async def update(
         self, id: str, *, expected_version: int | None = None, **changes: Unpack[MemoryChanges]
     ) -> MemoryRecord:
-        """Change the fields passed, as ``Collection.update()`` does."""
+        """Update a record, as ``Collection.update()`` does."""
         return await _in_thread(
             self._collection.update, id, expected_version=expected_version, **changes
         )
 
     async def archive(self, id: str) -> MemoryRecord:
-        """Hide the record from every read, as ``Collection.archive()`` does."""
+        """Archive a record, as ``Collection.archive()`` does."""
         return await _in_thread(self._collection.archive, id)
 
     async def restore(self, id: str) -> MemoryRecord:
-        """Bring the record back from the archive, as ``Collection.restore()`` does."""
+        """Restore a record, as ``Collection.restore()`` does."""
         return await _in_thread(self._collection.restore, id)
 
     async def delete(self, id: str) -> bool:
-        """Remove the record, as ``Collection.delete()`` does."""
+        """Delete a record, as ``Collection.delete()`` does."""
         return await _in_thread(self._collection.delete, id)
 
     async def list(
         self, *, limit: int | None = None, offset: int = 0, **filters: Unpack[Filters]
     ) -> builtins.list[MemoryRecord]:
-        """Records in the order they were added, as ``Collection.list()`` gives them."""
+        """List records, as ``Collection.list()`` does."""
         return await _in_thread(self._collection.list, limit=limit, offset=offset, **filters)
 
     async def count(self, **filters: Unpack[Filters]) -> int:
-        """The number of records, as ``Collection.count()`` gives it."""
+        """Count records, as ``Collection.count()`` does."""
         return await _in_thread(self._collection.count, **filters)
 
     async def search(
@@ -126,7 +126,7 @@ class AsyncCollection:
         mode: SearchMode = "auto",
         **filters: Unpack[Filters],
     ) -> builtins.list[SearchHit]:
-        """The records that best match ``query``, as ``Collection.search()`` finds them."""
+        """Search records, as ``Collection.search()`` does."""
         return await _in_thread(self._collection.search, query, limit=limit, mode=mode, **filters)
 
 
@@ -153,28 +153,28 @@ class AsyncMemoryEngine:
         timeout: float = 5.0,
         embedder: Embedder | None = None,
     ) -> Self:
-        """``MemoryEngine.sqlite()``, opened in a thread."""
+        """Open an engine on an SQLite file, as ``MemoryEngine.sqlite()`` does."""
         return cls(await _in_thread(MemoryEngine.sqlite, path, timeout=timeout, embedder=embedder))
 
     @classmethod
     async def in_memory(cls, *, embedder: Embedder | None = None) -> Self:
-        """``MemoryEngine.in_memory()``, opened in a thread."""
+        """Open an engine in memory, as ``MemoryEngine.in_memory()`` does."""
         return cls(await _in_thread(MemoryEngine.in_memory, embedder=embedder))
 
     def collection(self, namespace: str) -> AsyncCollection:
-        """The records of ``namespace``, as ``MemoryEngine.collection()`` gives them."""
+        """Get the records of ``namespace``, as ``MemoryEngine.collection()`` does."""
         return AsyncCollection(self._engine.collection(namespace))
 
     async def embed_missing(self) -> int:
-        """Give a vector to every record that has none, as ``MemoryEngine.embed_missing()`` does."""
+        """Embed the records that have no vector, as ``MemoryEngine.embed_missing()`` does."""
         return await _in_thread(self._engine.embed_missing)
 
     async def purge_expired(self) -> int:
-        """Delete every record that has expired, as ``MemoryEngine.purge_expired()`` does."""
+        """Purge expired records, as ``MemoryEngine.purge_expired()`` does."""
         return await _in_thread(self._engine.purge_expired)
 
     async def erase_deleted(self) -> None:
-        """Erase hidden data from the file, as ``MemoryEngine.erase_deleted()`` does."""
+        """Erase deleted data, as ``MemoryEngine.erase_deleted()`` does."""
         return await _in_thread(self._engine.erase_deleted)
 
     async def close(self) -> None:

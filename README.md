@@ -372,9 +372,9 @@ erases it. So do the old values that `put` and `update` replace, and the records
 `purge_expired()` deletes. Until then, a program that reads the file itself, not through pybodn,
 can still find them.
 
-`erase_deleted()` rewrites the file and the log beside it without the data hidden before the
-call. Archived records, and expired records that `purge_expired()` has not deleted yet, are
-still stored, so they stay: delete them first to erase them. Searches find the same records
+`erase_deleted()` rewrites the file and the log beside it without the data deleted, replaced or
+purged before the call. Archived records, and expired records that `purge_expired()` has not deleted
+yet, are still stored, so they stay: delete them first to erase them. Searches find the same records
 afterwards.
 
 - Run it now and then, not after every delete. It rewrites the whole file, and other writers wait
