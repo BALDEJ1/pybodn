@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "pybodn"
-version = "1.0.0"
+version = "1.0.1"
 description = "Store the memories of an AI agent or app in a local SQLite file and search them by words, or by meaning with your own embedding model."
 readme = "README.md"
 requires-python = ">=3.12"
