@@ -1,9 +1,16 @@
 # PyBodn
 
+[![PyPI](https://img.shields.io/pypi/v/pybodn)](https://pypi.org/project/pybodn/)
+[![Python](https://img.shields.io/pypi/pyversions/pybodn)](https://pypi.org/project/pybodn/)
+[![CI](https://github.com/BALDEJ1/pybodn/actions/workflows/ci.yml/badge.svg)](https://github.com/BALDEJ1/pybodn/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/BALDEJ1/pybodn)](https://github.com/BALDEJ1/pybodn/blob/main/LICENSE)
+
 PyBodn is a Python library for keeping the memories of an application or an AI agent: short
 texts such as facts about a user, notes, or what happened in a conversation. It stores them in an
 SQLite file or in memory, and finds them again by words, or by meaning if you give it an
 embedding model.
+
+![A short program saves two memories in separate runs, and later runs find each one by its words](https://raw.githubusercontent.com/BALDEJ1/pybodn/develop/docs/demo.gif)
 
 Each record belongs to a namespace, for example one per user, and can have a key, JSON metadata,
 tags, an importance score and an expiry time. Several threads and processes can use the same
