@@ -10,7 +10,7 @@ texts such as facts about a user, notes, or what happened in a conversation. It 
 SQLite file or in memory, and finds them again by words, or by meaning if you give it an
 embedding model.
 
-![A short program saves two memories in separate runs, and later runs find each one from the words of a question](https://raw.githubusercontent.com/BALDEJ1/pybodn/develop/docs/demo.gif)
+![A short program saves two memories in separate runs, and later runs find each one by its words](https://raw.githubusercontent.com/BALDEJ1/pybodn/develop/docs/demo.gif)
 
 Each record belongs to a namespace, for example one per user, and can have a key, JSON metadata,
 tags, an importance score and an expiry time. Several threads and processes can use the same
