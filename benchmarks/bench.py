@@ -219,13 +219,16 @@ def zeroing(folder: Path, corpus: Corpus) -> dict[str, tuple[float, float]]:
     """Seconds per add, update and delete in a file of ``ZEROED`` records with vectors: with
     SQLite zeroing what they remove, as every engine does, and without, as pybodn 1.0 writes.
     Runs with and without take turns, so that other programs on the machine slow both alike."""
+    calls = TURNS * 2 * OPERATIONS  # of each write, with zeroing and without
+    if ZEROED < 2 * calls:  # the updates and the deletes each take records of their own
+        raise ValueError(f"ZEROED must be at least {2 * calls:,}")
     path = folder / "zeroing.db"
     with MemoryEngine.sqlite(path, embedder=random_model(MAIN_DIMENSIONS)) as engine:
         connection = engine._store._connection  # type: ignore[attr-defined]  # noqa: SLF001
         notes = engine.collection("user:1")
         fill(notes, corpus.texts(ZEROED))
         records = iter(notes.list())
-        texts = corpus.texts(TURNS * 2 * OPERATIONS * 2, seed=-2)  # for the adds and the updates
+        texts = corpus.texts(2 * calls, seed=-2)  # one for each add and each update
 
         def add() -> None:
             for _ in range(OPERATIONS):
