@@ -201,15 +201,11 @@ _VACUUM = "VACUUM"
 _EMPTY_LOG = "PRAGMA wal_checkpoint(TRUNCATE)"
 _NOT_ERASED = "deleted data may still be in the file, which is intact"
 
-# Every connection has SQLite write zeros over what a delete or a replacement removes, before its
-# first write. A full erase made by such a connection marks the file: from then on, what pybodn
-# 1.1 or later deletes is zeroed at once, so a fast erase only rebuilds the word index and empties
-# the log. pybodn 1.0 and other programs neither zero nor know the mark, so the README says to
-# erase in full after they write to the file. A connection whose SQLite cannot zero removes the
-# mark as it opens the file. SQLite keeps the setting per connection, not in the file.
+# SQLite writes zeros over what a delete or a replacement removes, set per connection before its
+# first write. Once a full erase has rewritten the file, it is marked, and a fast erase skips the
+# rewrite. Writers that do not zero, such as pybodn 1.0, need a full erase: see the README.
 _ZERO_DELETED = "PRAGMA secure_delete = ON"
 _MARK_ZEROED = "INSERT OR REPLACE INTO settings (name, value) VALUES ('deletes_zeroed', 1)"
-_UNMARK_ZEROED = "DELETE FROM settings WHERE name = 'deletes_zeroed'"
 _IS_ZEROED = "SELECT EXISTS (SELECT 1 FROM settings WHERE name = 'deletes_zeroed')"
 _BUSY = "another connection kept the file busy until the timeout"
 
@@ -221,7 +217,7 @@ class SQLiteStore:
     turn, up to ``timeout`` seconds. Reads see every committed change at once.
     """
 
-    __slots__ = ("_closed", "_connection", "_lock", "_versions", "_zeroes")
+    __slots__ = ("_closed", "_connection", "_lock", "_versions")
 
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
@@ -252,15 +248,11 @@ class SQLiteStore:
                 # one in a read-only folder, fails here with SQLite's own reason. It also has each
                 # commit flushed to disk before the call returns.
                 self._connection.execute("PRAGMA synchronous = FULL").fetchall()
-                # Before the first write, which may be an upgrade that deletes too. A build that
-                # cannot zero gets a full erase every time.
-                self._zeroes = _single(self._connection, _ZERO_DELETED) == 1
+                # Before the first write, which may be an upgrade that deletes too.
                 _require_features(self._connection)
                 # two processes never migrate at once
                 with _transaction(self._connection, _BEGIN_WRITE):
                     _migrate(self._connection)
-                    if not self._zeroes:
-                        self._connection.execute(_UNMARK_ZEROED)
                     _index_words(self._connection)
                     self._versions = _file_versions(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
@@ -357,31 +349,21 @@ class SQLiteStore:
             try:
                 with self._up_to_date(_BEGIN_WRITE):
                     self._connection.execute(_OPTIMIZE_WORDS)
-                    full = not (fast and self._zeroes and _single(self._connection, _IS_ZEROED))
-                with _storage_errors():
-                    if full:
+                    full = not (fast and _single(self._connection, _IS_ZEROED))
+                if full:
+                    with _storage_errors():
                         self._connection.execute(_VACUUM)
+                    # Only after the rewrite, so that one that fails leaves no mark. The rewrite
+                    # is in the log, and every fast erase empties the log too.
+                    with self._up_to_date(_BEGIN_WRITE):
+                        self._connection.execute(_MARK_ZEROED)
+                with _storage_errors():
                     busy, _, _ = self._connection.execute(_EMPTY_LOG).fetchone()
                 if busy:
                     raise StorageError(_BUSY)
             except StorageError as error:
                 error.add_note(_NOT_ERASED)
                 raise
-            if full and self._zeroes:
-                self._mark_zeroed()
-
-    def _mark_zeroed(self) -> None:
-        """Mark the file as erased in full by a connection that zeroes what it deletes.
-
-        Only after the log is empty, so that a full erase that fails never leaves the mark. If the
-        mark cannot be written, what was deleted is erased all the same, and the next fast erase is
-        full. The mark goes through the log too: emptying it again may find a reader, and then the
-        log keeps only the mark, which holds nothing deleted.
-        """
-        with self._up_to_date(_BEGIN_WRITE):
-            self._connection.execute(_MARK_ZEROED)
-        with _storage_errors():
-            self._connection.execute(_EMPTY_LOG).fetchall()
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int
@@ -595,7 +577,10 @@ def _wait_for_no_journal(path: str, timeout: float) -> None:
 
 
 def _require_features(connection: sqlite3.Connection) -> None:
-    """Refuse an SQLite that lacks what the file needs, before the file is changed."""
+    """Refuse an SQLite that lacks what the file needs, before the file is changed.
+
+    It also has SQLite zero what this connection deletes, which the fast erase relies on.
+    """
     try:
         connection.execute("SELECT json_valid('[]')").fetchall()
         connection.execute(f"CREATE VIRTUAL TABLE temp.trial USING {schema.WORD_INDEX}")
@@ -605,6 +590,11 @@ def _require_features(connection: sqlite3.Connection) -> None:
             "pybodn needs SQLite with full-text search (FTS5) and JSON; this Python's SQLite"
             f" {sqlite3.sqlite_version} lacks one: {error}"
         ) from error
+    if [zeroes for (zeroes,) in connection.execute(_ZERO_DELETED)] != [1]:
+        raise StorageError(
+            "pybodn needs SQLite that can zero deleted data (secure_delete); this Python's SQLite"
+            f" {sqlite3.sqlite_version} cannot"
+        )
 
 
 def _index_words(connection: sqlite3.Connection) -> None:

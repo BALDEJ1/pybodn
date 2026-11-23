@@ -402,7 +402,7 @@ rewrites the index of words and empties the log. Vectors, which make most of a f
 nothing. It needs no free disk space beyond the file, and the file keeps its size: the space freed
 stays in it, zeroed, for later records. Only a full erase gives it back.
 
-- Until a full erase by pybodn 1.1 or later has finished on the file, a fast erase is full too,
+- Until a full erase by pybodn 1.1 or later has rewritten the file, a fast erase is full too,
   since older releases left deleted data unzeroed. So the first fast erase of a file from an older
   release takes as long as a full one.
 - Only pybodn 1.1 and later zero what they delete. If anything else deletes or changes data in

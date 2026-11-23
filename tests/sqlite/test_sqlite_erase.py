@@ -2,99 +2,30 @@
 write-ahead log afterwards, and what is still stored stays. The tests read the bytes."""
 
 import sqlite3
-from collections.abc import Callable, Mapping
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from pybodn import Embedder, MemoryEngine, MemoryRecord
+from pybodn import Embedder, MemoryEngine
 from pybodn.errors import StorageError
-from tests.sqlite.support import PAST, SHORT_WAIT, format_marks, needs_read_only, run_sql
-
-# In no other text of these tests, and no other word starts with its first letter, so the word
-# index keeps it whole.
-MARK = "zqvmark"
-SPACE = f"{MARK}space"
-# The values of the marked record that the file holds as text.
-TEXTS = {
-    "text": f"{MARK}text",
-    "key": f"{MARK}key",
-    "tag": f"{MARK}tag",
-    "field": f"{MARK}field",
-    "value": f"{MARK}value",
-    "source": f"{MARK}source",
-    "namespace": SPACE,
-}
-# What a new version of the record no longer holds, and everything the record left.
-OLD_VALUES = frozenset({"text", "tag", "field", "value", "source"})
-EVERY_TRACE = OLD_VALUES | {"id", "key", "namespace", "token"}
-
-
-def add_marked(engine: MemoryEngine) -> MemoryRecord:
-    """A record with the mark in every field, alone in a namespace of its own."""
-    return engine.collection(SPACE).add(
-        TEXTS["text"],
-        key=TEXTS["key"],
-        tags=[TEXTS["tag"]],
-        metadata={TEXTS["field"]: TEXTS["value"]},
-        source=TEXTS["source"],
-    )
-
-
-def file_bytes(path: Path) -> bytes:
-    """The database file and its write-ahead log, as one run of bytes."""
-    log = path.with_name(f"{path.name}-wal")
-    return path.read_bytes() + (log.read_bytes() if log.exists() else b"")
-
-
-def left_in_file(path: Path, traces: Mapping[str, bytes]) -> set[str]:
-    stored = file_bytes(path)
-    return {name for name, trace in traces.items() if trace in stored}
-
-
-def assert_in_file(path: Path, traces: Mapping[str, bytes]) -> None:
-    """Every trace is in the file, so that a test cannot pass for want of them."""
-    assert left_in_file(path, traces) == set(traces)
-
-
-def traces_of(record: MemoryRecord) -> dict[str, bytes]:
-    """The marked record's texts, its id and its namespace's token in the word index."""
-    return {name: text.encode() for name, text in TEXTS.items()} | {
-        "id": record.id.encode(),
-        "token": SPACE.encode().hex().encode(),
-    }
-
-
-type Hide = Callable[[MemoryEngine, MemoryRecord], object]
-
-
-def purge(engine: MemoryEngine, record: MemoryRecord) -> None:
-    engine.collection(SPACE).update(record.id, expires_at=PAST)
-    engine.purge_expired()
-
-
-# Each way to hide the marked record or its old values, and the traces the erase removes.
-# Archived records and expired ones not yet purged are still stored, so nothing goes.
-HIDE: dict[str, tuple[Hide, frozenset[str]]] = {
-    "delete": (lambda engine, record: engine.collection(SPACE).delete(record.id), EVERY_TRACE),
-    "purge-expired": (purge, EVERY_TRACE),
-    "replacing-put": (
-        lambda engine, _: engine.collection(SPACE).put(TEXTS["key"], "plain words"),
-        OLD_VALUES,
-    ),
-    "update": (
-        lambda engine, record: engine.collection(SPACE).update(
-            record.id, content="plain words", tags=[], metadata={}, source=None
-        ),
-        OLD_VALUES,
-    ),
-    "archive": (lambda engine, record: engine.collection(SPACE).archive(record.id), frozenset()),
-    "expiry": (
-        lambda engine, record: engine.collection(SPACE).update(record.id, expires_at=PAST),
-        frozenset(),
-    ),
-}
+from tests.sqlite.support import (
+    HIDE,
+    HOLD,
+    MARK,
+    SHORT_WAIT,
+    SPACE,
+    Hide,
+    add_marked,
+    assert_in_file,
+    bytes_of,
+    format_marks,
+    left_in_file,
+    needs_read_only,
+    run_sql,
+    stored_vector,
+    traces_of,
+)
 
 
 @pytest.mark.parametrize(("hide", "erased"), HIDE.values(), ids=HIDE.keys())
@@ -121,19 +52,6 @@ def test_erase_deleted_removes_from_the_file_only_what_was_hidden(
     assert run_sql(path, "PRAGMA integrity_check") == [("ok",)]
 
 
-def bytes_of(texts: list[str]) -> list[list[float]]:
-    """A vector of each text's first eight bytes, so that each text has a vector of its own."""
-    return [[float(byte) for byte in text.encode()[:8].ljust(8, b".")] for text in texts]
-
-
-def stored_vector(path: Path, record: MemoryRecord) -> bytes:
-    ((vector,),) = run_sql(
-        path, "SELECT vector FROM memory_vectors WHERE record_id = ?", (record.id,)
-    )
-    assert isinstance(vector, bytes)
-    return vector
-
-
 def test_erase_deleted_removes_the_vector_of_a_deleted_record_and_one_replaced(
     path: Path,
 ) -> None:
@@ -156,11 +74,6 @@ def test_erase_deleted_removes_the_vector_of_a_deleted_record_and_one_replaced(
         # Assert
         left = left_in_file(path, vectors)
     assert left == set()
-
-
-# How another connection holds the file: a reader keeps the log from being emptied, and a writer
-# keeps the erase from starting.
-HOLD = {"reader": "BEGIN", "writer": "BEGIN IMMEDIATE"}
 
 
 @pytest.mark.parametrize("begin", HOLD.values(), ids=HOLD.keys())

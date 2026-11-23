@@ -12,17 +12,19 @@ import pytest
 from pybodn import Embedder, MemoryEngine, NewMemory
 from pybodn._storage import sqlite as sqlite_store
 from pybodn.errors import StorageError
-from tests.sqlite.support import PAST, SHORT_WAIT, run_sql
-from tests.sqlite.test_sqlite_erase import (
+from tests.sqlite.support import (
     HIDE,
     HOLD,
     MARK,
+    PAST,
+    SHORT_WAIT,
     SPACE,
     Hide,
     add_marked,
     assert_in_file,
     bytes_of,
     left_in_file,
+    run_sql,
     stored_vector,
     traces_of,
 )
@@ -119,12 +121,37 @@ def test_the_first_fast_erase_of_a_file_is_full_and_the_next_is_fast(path: Path)
     assert after_second > 0
 
 
-def test_a_fast_erase_after_a_full_one_failed_is_full(path: Path) -> None:
+def test_a_full_erase_whose_rewrite_fails_leaves_the_next_fast_one_full(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with MemoryEngine.sqlite(path) as engine:
+        # Arrange: a rewrite that fails, as on a full disk
+        free_some_pages(engine)
+        with monkeypatch.context() as patch:
+            patch.setattr(sqlite_store, "_VACUUM", "VACUUM missing")
+            with pytest.raises(StorageError, match="deleted data may still be in the file"):
+                engine.erase_deleted()
+
+        # Act
+        engine.erase_deleted(fast=True)
+
+        # Assert
+        free = free_pages(path)
+    assert free == 0
+
+
+def test_a_full_erase_that_cannot_empty_the_log_still_lets_a_fast_one_erase_what_came_before(
+    path: Path,
+) -> None:
     with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
-        # Arrange: a full erase that a reader keeps from emptying the log
+        # Arrange: a record deleted without zeroing, as pybodn 1.0 deletes, then a full erase
+        # that rewrites the file but that a reader keeps from emptying the log
         record = add_marked(engine)
         traces = traces_of(record)
-        engine.collection(SPACE).delete(record.id)
+        with MemoryEngine.sqlite(path) as old:
+            stop_zeroing(old)
+            old.collection(SPACE).delete(record.id)
+        assert left_in_file(path, traces) - IN_WORD_INDEX
         with closing(sqlite3.connect(path, autocommit=True)) as reader:
             reader.execute("BEGIN")
             reader.execute("SELECT count(*) FROM memories").fetchall()
@@ -135,11 +162,11 @@ def test_a_fast_erase_after_a_full_one_failed_is_full(path: Path) -> None:
         # Act
         engine.erase_deleted(fast=True)
 
-        # Assert
+        # Assert: it was fast, and emptying the log carried the rewrite into the file
         left = left_in_file(path, traces)
         free = free_pages(path)
     assert left == set()
-    assert free == 0
+    assert free > 0
 
 
 @pytest.mark.parametrize("begin", HOLD.values(), ids=HOLD.keys())
@@ -191,29 +218,19 @@ def test_a_fast_erase_misses_what_a_writer_without_zeroing_deleted_and_a_full_on
     assert after_full == set()
 
 
-def test_an_engine_whose_sqlite_cannot_zero_removes_the_mark_and_always_erases_in_full(
+def test_an_sqlite_that_cannot_zero_is_refused_and_the_file_stays_as_it_was(
     path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Arrange: a marked file, then an engine whose SQLite ignores the request to zero
+    # Arrange: a marked file, then an SQLite that ignores the request to zero
     with MemoryEngine.sqlite(path) as engine:
         engine.erase_deleted()
+    before = path.read_bytes()
     monkeypatch.setattr(sqlite_store, "_ZERO_DELETED", "PRAGMA secure_delete = OFF")
-    with MemoryEngine.sqlite(path) as engine:
-        record = add_marked(engine)
-        traces = traces_of(record)
-        engine.collection(SPACE).delete(record.id)
-        free_some_pages(engine)
 
-        # Act
-        engine.erase_deleted(fast=True)
-
-        # Assert
-        left = left_in_file(path, traces)
-        free = free_pages(path)
-    marks = run_sql(path, "SELECT name FROM settings WHERE name = 'deletes_zeroed'")
-    assert left == set()
-    assert free == 0
-    assert marks == []
+    # Act / Assert
+    with pytest.raises(StorageError):
+        MemoryEngine.sqlite(path)
+    assert path.read_bytes() == before
 
 
 def test_a_fast_erase_removes_the_vector_of_a_deleted_record_and_one_replaced(path: Path) -> None:

@@ -143,7 +143,7 @@ class MemoryEngine:
         file, and other writers wait for it up to their timeout, then raise ``StorageError``.
         pybodn 1.1 and later zero what they delete, so with ``fast=True`` it only rebuilds the word
         index and empties the log, and the file keeps its size. Until a full erase by pybodn 1.1 or
-        later has finished on the file, a fast one is full too. Only pybodn 1.1 and later zero what
+        later has rewritten the file, a fast one is full too. Only pybodn 1.1 and later zero what
         they delete: if anything else, such as pybodn 1.0, deletes from the file while or after that
         full erase runs, erase without ``fast`` once.
 
