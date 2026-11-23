@@ -396,6 +396,21 @@ afterwards.
   provider made are out of its reach. If you need more, keep the file on an encrypted disk.
 - In memory, there is nothing to erase: a deleted record is gone at once.
 
+`erase_deleted(fast=True)` erases the same data without rewriting the file. pybodn 1.1 and later
+write zeros over what a delete, `put`, `update` or `purge_expired()` removes, so a fast erase only
+rewrites the index of words and empties the log. Vectors, which make most of a file, cost it
+nothing. It needs no free disk space beyond the file, and the file keeps its size: the space freed
+stays in it, zeroed, for later records. Only a full erase gives it back.
+
+- Until a full erase by pybodn 1.1 or later has finished on the file, a fast erase is full too,
+  since older releases left deleted data unzeroed. So the first fast erase of a file from an older
+  release takes as long as a full one.
+- Only pybodn 1.1 and later zero what they delete. If anything else deletes or changes data in
+  the file while or after that full erase runs, such as a process running pybodn 1.0 or a
+  connection of your own through `sqlite3`, erase without `fast` once.
+- If another connection keeps the file busy for the whole `timeout`, it raises `StorageError`, as
+  a full erase does.
+
 ```python
 from pybodn import MemoryEngine
 
@@ -404,6 +419,9 @@ with MemoryEngine.sqlite("memory.db") as engine:
     notes.delete(notes.add("Phone number is 555-0100").id)
 
     engine.erase_deleted()  # the number is gone from memory.db and its log
+
+    notes.delete(notes.add("Lives at 12 Elm Street").id)
+    engine.erase_deleted(fast=True)  # gone too, and the file was not rewritten
 ```
 
 ## Search
@@ -687,8 +705,8 @@ namespaces is not limited, and the limits below never get stricter in a 1.x rele
   integers fit in 64 bits, as SQLite stores them.
 - A record keeps a copy of the `metadata` you pass: changing your dict later changes nothing.
 - `expires_at` is `None` or a `datetime` with a time zone, within years 1 to 9999 in UTC, and
-  `include_archived` and `include_expired` are `True`, `False` or `None`. `dedupe` is `True` or
-  `False`.
+  `include_archived` and `include_expired` are `True`, `False` or `None`. `dedupe`, and `fast`
+  of `erase_deleted()`, are `True` or `False`.
 - `limit` and `expected_version` are `None` or an integer from 1, and `offset` is an integer
   from 0. None of them can exceed 2**63 - 1, the largest integer SQLite stores.
 - A search's `query` is a string, of at most 100 different words when it searches by words. Its

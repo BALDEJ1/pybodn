@@ -131,19 +131,28 @@ class MemoryEngine:
             purged += deleted
         return purged
 
-    def erase_deleted(self) -> None:
+    def erase_deleted(self, *, fast: bool = False) -> None:
         """Erase deleted data from the file and its log.
 
         A delete, a ``put`` or ``update`` that replaces values, and ``purge_expired`` remove data
         from every read at once, but it stays in the file until this erases what they removed before
         the call. Then a program reading the file itself no longer finds it. Archived records and
-        expired ones not yet purged are still stored, and stay. It needs free disk space up to twice
-        the size of the file, and other writers wait for it up to their timeout, then raise
-        ``StorageError``. If another connection keeps the file busy all the while, or the file
-        cannot be written, it raises ``StorageError``: the file is intact, deleted data may still be
-        in it, and the call can be made again later. In memory, there is nothing to erase.
+        expired ones not yet purged are still stored, and stay.
+
+        By default it rewrites the whole file: it needs free disk space up to twice the size of the
+        file, and other writers wait for it up to their timeout, then raise ``StorageError``.
+        pybodn 1.1 and later zero what they delete, so with ``fast=True`` it only rebuilds the word
+        index and empties the log, and the file keeps its size. Until a full erase by pybodn 1.1 or
+        later has finished on the file, a fast one is full too. Only pybodn 1.1 and later zero what
+        they delete: if anything else, such as pybodn 1.0, deletes from the file while or after that
+        full erase runs, erase without ``fast`` once.
+
+        If another connection keeps the file busy all the while, or the file cannot be written, it
+        raises ``StorageError``: the file is intact, deleted data may still be in it, and the call
+        can be made again later. In memory, there is nothing to erase.
         """
-        self._store.erase_deleted()
+        ensure_open(self._store)
+        self._store.erase_deleted(fast=validate.flag("fast", fast))
 
     def close(self) -> None:
         """Close the storage. Safe to call again."""

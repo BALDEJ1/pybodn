@@ -201,6 +201,18 @@ _VACUUM = "VACUUM"
 _EMPTY_LOG = "PRAGMA wal_checkpoint(TRUNCATE)"
 _NOT_ERASED = "deleted data may still be in the file, which is intact"
 
+# Every connection has SQLite write zeros over what a delete or a replacement removes, before its
+# first write. A full erase made by such a connection marks the file: from then on, what pybodn
+# 1.1 or later deletes is zeroed at once, so a fast erase only rebuilds the word index and empties
+# the log. pybodn 1.0 and other programs neither zero nor know the mark, so the README says to
+# erase in full after they write to the file. A connection whose SQLite cannot zero removes the
+# mark as it opens the file. SQLite keeps the setting per connection, not in the file.
+_ZERO_DELETED = "PRAGMA secure_delete = ON"
+_MARK_ZEROED = "INSERT OR REPLACE INTO settings (name, value) VALUES ('deletes_zeroed', 1)"
+_UNMARK_ZEROED = "DELETE FROM settings WHERE name = 'deletes_zeroed'"
+_IS_ZEROED = "SELECT EXISTS (SELECT 1 FROM settings WHERE name = 'deletes_zeroed')"
+_BUSY = "another connection kept the file busy until the timeout"
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -209,7 +221,7 @@ class SQLiteStore:
     turn, up to ``timeout`` seconds. Reads see every committed change at once.
     """
 
-    __slots__ = ("_closed", "_connection", "_lock", "_versions")
+    __slots__ = ("_closed", "_connection", "_lock", "_versions", "_zeroes")
 
     def __init__(self, path: str, *, timeout: float) -> None:
         """Open the file at ``path``, made if missing; ``":memory:"`` keeps records in memory.
@@ -240,10 +252,15 @@ class SQLiteStore:
                 # one in a read-only folder, fails here with SQLite's own reason. It also has each
                 # commit flushed to disk before the call returns.
                 self._connection.execute("PRAGMA synchronous = FULL").fetchall()
+                # Before the first write, which may be an upgrade that deletes too. A build that
+                # cannot zero gets a full erase every time.
+                self._zeroes = _single(self._connection, _ZERO_DELETED) == 1
                 _require_features(self._connection)
                 # two processes never migrate at once
                 with _transaction(self._connection, _BEGIN_WRITE):
                     _migrate(self._connection)
+                    if not self._zeroes:
+                        self._connection.execute(_UNMARK_ZEROED)
                     _index_words(self._connection)
                     self._versions = _file_versions(self._connection)
                 _use_write_ahead_log(self._connection, timeout)
@@ -334,20 +351,37 @@ class SQLiteStore:
                     self._connection.execute(statement, (given,))
         return len(seqs)
 
-    def erase_deleted(self) -> None:
+    def erase_deleted(self, *, fast: bool) -> None:
         with self._lock:
             ensure_open(self)
             try:
                 with self._up_to_date(_BEGIN_WRITE):
                     self._connection.execute(_OPTIMIZE_WORDS)
+                    full = not (fast and self._zeroes and _single(self._connection, _IS_ZEROED))
                 with _storage_errors():
-                    self._connection.execute(_VACUUM)
+                    if full:
+                        self._connection.execute(_VACUUM)
                     busy, _, _ = self._connection.execute(_EMPTY_LOG).fetchone()
                 if busy:
-                    raise StorageError("another connection kept the file busy until the timeout")
+                    raise StorageError(_BUSY)
             except StorageError as error:
                 error.add_note(_NOT_ERASED)
                 raise
+            if full and self._zeroes:
+                self._mark_zeroed()
+
+    def _mark_zeroed(self) -> None:
+        """Mark the file as erased in full by a connection that zeroes what it deletes.
+
+        Only after the log is empty, so that a full erase that fails never leaves the mark. If the
+        mark cannot be written, what was deleted is erased all the same, and the next fast erase is
+        full. The mark goes through the log too: emptying it again may find a reader, and then the
+        log keeps only the mark, which holds nothing deleted.
+        """
+        with self._up_to_date(_BEGIN_WRITE):
+            self._connection.execute(_MARK_ZEROED)
+        with _storage_errors():
+            self._connection.execute(_EMPTY_LOG).fetchall()
 
     def list(
         self, namespace: str, *, where: Filter, limit: int | None, offset: int

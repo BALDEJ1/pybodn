@@ -191,7 +191,10 @@ def test_erase_deleted_fails_while_another_connection_holds_the_file_and_succeed
 
 
 @needs_read_only
-def test_erase_deleted_on_a_read_only_file_fails_and_leaves_it_as_it_was(path: Path) -> None:
+@pytest.mark.parametrize("fast", [False, True], ids=["full", "fast"])
+def test_erase_deleted_on_a_read_only_file_fails_and_leaves_it_as_it_was(
+    path: Path, fast: bool
+) -> None:
     # Arrange
     with MemoryEngine.sqlite(path) as engine:
         engine.collection(SPACE).delete(add_marked(engine).id)
@@ -202,7 +205,7 @@ def test_erase_deleted_on_a_read_only_file_fails_and_leaves_it_as_it_was(path: P
     try:
         with MemoryEngine.sqlite(path, timeout=SHORT_WAIT) as engine:
             with pytest.raises(StorageError):
-                engine.erase_deleted()
+                engine.erase_deleted(fast=fast)
     finally:
         path.chmod(0o644)
 

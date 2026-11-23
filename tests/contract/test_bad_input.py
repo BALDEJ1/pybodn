@@ -171,6 +171,12 @@ def test_bad_namespace_is_rejected(engine: MemoryEngine, namespace: Any) -> None
         engine.collection(namespace)
 
 
+@pytest.mark.parametrize("fast", [None, 1, "yes", pytest.param(HUGE_INTEGER, id="huge-integer")])
+def test_a_bad_fast_flag_is_rejected(engine: MemoryEngine, fast: Any) -> None:
+    with pytest.raises(ValidationError, match="^fast must be True or False"):
+        engine.erase_deleted(fast=fast)
+
+
 @pytest.mark.parametrize("memories", [None, 5, "text", [None], [{"content": "text"}]])
 def test_add_many_rejects_anything_but_new_memories(notes: Collection, memories: Any) -> None:
     with pytest.raises(ValidationError, match="memories"):

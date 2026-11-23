@@ -76,7 +76,7 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
     "modify": lambda store: store.modify("user:123", "id", MISSING_ID, never_build),
     "delete": lambda store: store.delete("user:123", MISSING_ID),
     "purge_expired": lambda store: store.purge_expired(datetime.now(UTC), limit=10),
-    "erase_deleted": lambda store: store.erase_deleted(),
+    "erase_deleted": lambda store: store.erase_deleted(fast=False),
     "list": lambda store: store.list("user:123", where=EVERYTHING, limit=None, offset=0),
     "count": lambda store: store.count("user:123", where=EVERYTHING),
     "search_words": lambda store: store.search_words(
@@ -125,6 +125,12 @@ def test_an_engine_wide_call_after_close_raises_engine_closed_error(
     engine.close()
     with pytest.raises(EngineClosedError):
         getattr(engine, name)()
+
+
+def test_a_closed_engine_is_reported_before_a_bad_fast_flag(engine: MemoryEngine) -> None:
+    engine.close()
+    with pytest.raises(EngineClosedError):
+        engine.erase_deleted(fast=1)  # type: ignore[arg-type]
 
 
 def test_close_can_be_called_again(engine: MemoryEngine) -> None:
