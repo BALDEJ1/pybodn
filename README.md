@@ -596,6 +596,11 @@ fastest of five runs.
 - In a namespace of 100,000 records where every other one has expired, `count()` takes 3.6 ms
   and the first page of `list()` 0.1 ms. `purge_expired()` deletes the 50,000 expired records in
   1.2 s, and `erase_deleted()` then takes 0.2 s.
+- In a file of 100,000 records with vectors of 1,536 numbers where every tenth is deleted,
+  `erase_deleted()` takes 19 s, and `erase_deleted(fast=True)` 74 ms. A full erase writes the
+  whole file, so other programs using the disk slow it down: here up to 46 s.
+- Writing zeros over what a delete removes makes a delete about a fifth slower, 150 µs instead of
+  125 µs in a file of 10,000 records with vectors. Adds and updates take about as long either way.
 - An async call takes about 30 µs longer than the same sync call, because it runs in a thread.
 
 ## Threads and processes
