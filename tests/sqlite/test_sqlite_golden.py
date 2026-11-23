@@ -22,10 +22,15 @@ from tests.golden.make_golden import (
 )
 from tests.sqlite.support import files_in, format_marks
 
-RELEASES = ("0.1.0", "0.2.0", "0.3.0")
-WITH_VECTORS = ("0.2.0", "0.3.0")
+RELEASES = ("0.1.0", "0.2.0", "0.3.0", "1.0.1")
+WITH_VECTORS = ("0.2.0", "0.3.0", "1.0.1")
 # The release whose files 1.x writes: the file format is frozen until 2.0.
 CURRENT_FORMAT = "0.3.0"
+# Releases that wrote files in that format.
+SAME_FORMAT = ("0.3.0", "1.0.1")
+# Words of the deleted record and the first words of the updated one: their releases left them in
+# the file, and no stored record holds them.
+LEFT_BEHIND = (b"max", b"night")
 # Application id, schema version and word rules of that format, written out on purpose: they
 # stay as they are until 2.0.
 FORMAT_MARKS = (0x50594244, 3, 1)
@@ -99,13 +104,31 @@ def test_a_file_from_0_3_0_keeps_its_expired_and_archived_records(path: Path) ->
     assert hidden[ARCHIVED].archived_at is not None
 
 
-def test_a_file_of_the_current_format_is_left_exactly_as_it_was(path: Path) -> None:
+@pytest.mark.parametrize("release", SAME_FORMAT)
+def test_a_file_of_the_current_format_is_left_exactly_as_it_was(path: Path, release: str) -> None:
     # Arrange
-    shutil.copyfile(path_of(CURRENT_FORMAT), path)
+    shutil.copyfile(path_of(release), path)
 
     # Act
     MemoryEngine.sqlite(path).close()
 
     # Assert
-    assert path.read_bytes() == path_of(CURRENT_FORMAT).read_bytes()
+    assert path.read_bytes() == path_of(release).read_bytes()
     assert files_in(path.parent) == [path.name]
+
+
+@pytest.mark.parametrize("release", SAME_FORMAT)
+def test_the_first_fast_erase_of_a_file_from_a_release_erases_what_the_release_left(
+    path: Path, release: str
+) -> None:
+    # Arrange
+    shutil.copyfile(path_of(release), path)
+    assert all(word in path.read_bytes() for word in LEFT_BEHIND)
+
+    # Act
+    with MemoryEngine.sqlite(path) as engine:
+        engine.erase_deleted(fast=True)
+
+    # Assert
+    stored = path.read_bytes()
+    assert [word for word in LEFT_BEHIND if word in stored] == []

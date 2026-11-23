@@ -201,6 +201,14 @@ _VACUUM = "VACUUM"
 _EMPTY_LOG = "PRAGMA wal_checkpoint(TRUNCATE)"
 _NOT_ERASED = "deleted data may still be in the file, which is intact"
 
+# SQLite writes zeros over what a delete or a replacement removes, set per connection before its
+# first write. Once a full erase has rewritten the file, it is marked, and a fast erase skips the
+# rewrite. Writers that do not zero, such as pybodn 1.0, need a full erase: see the README.
+_ZERO_DELETED = "PRAGMA secure_delete = ON"
+_MARK_ZEROED = "INSERT OR REPLACE INTO settings (name, value) VALUES ('deletes_zeroed', 1)"
+_IS_ZEROED = "SELECT EXISTS (SELECT 1 FROM settings WHERE name = 'deletes_zeroed')"
+_BUSY = "another connection kept the file busy until the timeout"
+
 
 class SQLiteStore:
     """Records in an SQLite file, through one connection behind one lock.
@@ -240,6 +248,7 @@ class SQLiteStore:
                 # one in a read-only folder, fails here with SQLite's own reason. It also has each
                 # commit flushed to disk before the call returns.
                 self._connection.execute("PRAGMA synchronous = FULL").fetchall()
+                # Before the first write, which may be an upgrade that deletes too.
                 _require_features(self._connection)
                 # two processes never migrate at once
                 with _transaction(self._connection, _BEGIN_WRITE):
@@ -334,17 +343,24 @@ class SQLiteStore:
                     self._connection.execute(statement, (given,))
         return len(seqs)
 
-    def erase_deleted(self) -> None:
+    def erase_deleted(self, *, fast: bool) -> None:
         with self._lock:
             ensure_open(self)
             try:
                 with self._up_to_date(_BEGIN_WRITE):
                     self._connection.execute(_OPTIMIZE_WORDS)
+                    full = not (fast and _single(self._connection, _IS_ZEROED))
+                if full:
+                    with _storage_errors():
+                        self._connection.execute(_VACUUM)
+                    # Only after the rewrite, so that one that fails leaves no mark. The rewrite
+                    # is in the log, and every fast erase empties the log too.
+                    with self._up_to_date(_BEGIN_WRITE):
+                        self._connection.execute(_MARK_ZEROED)
                 with _storage_errors():
-                    self._connection.execute(_VACUUM)
                     busy, _, _ = self._connection.execute(_EMPTY_LOG).fetchone()
                 if busy:
-                    raise StorageError("another connection kept the file busy until the timeout")
+                    raise StorageError(_BUSY)
             except StorageError as error:
                 error.add_note(_NOT_ERASED)
                 raise
@@ -561,7 +577,10 @@ def _wait_for_no_journal(path: str, timeout: float) -> None:
 
 
 def _require_features(connection: sqlite3.Connection) -> None:
-    """Refuse an SQLite that lacks what the file needs, before the file is changed."""
+    """Refuse an SQLite that lacks what the file needs, before the file is changed.
+
+    It also has SQLite zero what this connection deletes, which the fast erase relies on.
+    """
     try:
         connection.execute("SELECT json_valid('[]')").fetchall()
         connection.execute(f"CREATE VIRTUAL TABLE temp.trial USING {schema.WORD_INDEX}")
@@ -571,6 +590,11 @@ def _require_features(connection: sqlite3.Connection) -> None:
             "pybodn needs SQLite with full-text search (FTS5) and JSON; this Python's SQLite"
             f" {sqlite3.sqlite_version} lacks one: {error}"
         ) from error
+    if [zeroes for (zeroes,) in connection.execute(_ZERO_DELETED)] != [1]:
+        raise StorageError(
+            "pybodn needs SQLite that can zero deleted data (secure_delete); this Python's SQLite"
+            f" {sqlite3.sqlite_version} cannot"
+        )
 
 
 def _index_words(connection: sqlite3.Connection) -> None:

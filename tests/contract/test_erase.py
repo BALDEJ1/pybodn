@@ -1,5 +1,7 @@
 """Erasing deleted data changes nothing that a read can see."""
 
+import pytest
+
 from pybodn import Collection, MemoryEngine, MemoryRecord, SearchHit
 from tests.contract.conftest import START
 
@@ -12,8 +14,9 @@ def everything(notes: Collection) -> tuple[list[MemoryRecord], list[SearchHit]]:
     )
 
 
+@pytest.mark.parametrize("fast", [False, True], ids=["full", "fast"])
 def test_erase_deleted_keeps_every_stored_record_and_finds_the_same(
-    engine: MemoryEngine, notes: Collection
+    engine: MemoryEngine, notes: Collection, fast: bool
 ) -> None:
     # Arrange: stored records, hidden ones among them, beside deleted and replaced ones
     notes.add("prefers python for backend work", key="language", tags=["work"])
@@ -23,8 +26,9 @@ def test_erase_deleted_keeps_every_stored_record_and_finds_the_same(
     notes.delete(notes.add("drinks green tea with python").id)
     before = everything(notes)
 
-    # Act
-    engine.erase_deleted()
+    # Act: twice, since the first fast erase of a file is a full one
+    engine.erase_deleted(fast=fast)
+    engine.erase_deleted(fast=fast)
 
     # Assert
     assert everything(notes) == before

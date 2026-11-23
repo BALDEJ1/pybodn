@@ -111,7 +111,7 @@ CALLS: dict[str, tuple[tuple[object, ...], dict[str, object]]] = {
     "search": (("кава",), {"limit": 3, "mode": "text"}),
     "embed_missing": ((), {}),
     "purge_expired": ((), {}),
-    "erase_deleted": ((), {}),
+    "erase_deleted": ((), {"fast": True}),
 }
 TESTED_ON_THEIR_OWN = {"sqlite", "in_memory", "close"}
 
