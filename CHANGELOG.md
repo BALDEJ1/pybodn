@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-23
+
 ### Added
 
 - `MemoryEngine.erase_deleted(fast=True)` and its async twin erase deleted data without rewriting the whole file. It rewrites only the index of words and empties the log, so it needs no extra disk space and the file keeps its size. Until a full erase by 1.1 or later has rewritten a file, a fast erase is full too, and after pybodn 1.0 or another program deletes from the file, it takes one full erase again; the README section Erase deleted data tells the rest.
@@ -14,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Every engine has SQLite write zeros over what a delete, `put`, `update` or `purge_expired()` removes from the file, which the fast erase relies on. It makes a delete about a fifth slower; the README section Speed and size has the figures.
-
 - The README has badges and a short animation of a program that saves two memories and finds them in later runs.
 
 ## [1.0.1] - 2026-11-21
