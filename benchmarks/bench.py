@@ -4,7 +4,7 @@ Run it from the repository root, with NumPy installed, as ``uv sync`` installs i
 
     uv run python -m benchmarks.bench
 
-It takes a few minutes and writes up to 2 GB of files to a temporary folder, removed at the end.
+It takes a few minutes and writes up to 3 GB of files to a temporary folder, removed at the end.
 Records are 5 to 25 words drawn from 50,000 made-up words, the n-th most common used 1/n as often
 as the most common one, as words are in real text. Vectors are random: a search by meaning reads
 every vector whatever its numbers, so its time does not depend on them.
@@ -44,6 +44,11 @@ PER_NAMESPACE = 1_000
 UPGRADED = 100_000  # records in each file from an older pybodn
 OLDER = {"0.1.0": 1, "0.2.0": 2}  # each older pybodn, with the schema version of its files
 HIDDEN = 100_000  # records in the file where every other one has expired
+ERASED = 100_000  # records with vectors in the file that the full and the fast erase measure
+ERASE_EVERY = 10  # of them, every tenth is deleted before each erase
+ZEROED = 10_000  # records with vectors in the file that measures what zeroing costs
+OPERATIONS = 100  # adds, updates or deletes in each run that measures what zeroing costs
+TURNS = 20  # runs of each write with zeroing and as many without, taking turns
 EXPIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 ASYNC_CALLS = 1_000  # calls in each run that measures what awaiting a call adds
 VOCABULARY = 50_000
@@ -192,6 +197,61 @@ def hidden(folder: Path, corpus: Corpus) -> tuple[float, float, float, float]:
     return count, page, purge, erase
 
 
+def erasing(folder: Path, corpus: Corpus) -> tuple[float, float]:
+    """In a file of ``ERASED`` records with vectors, a full erase, then a fast one, each after
+    every tenth record is deleted; each runs once."""
+    path = folder / "erased.db"
+    with MemoryEngine.sqlite(path, embedder=random_model(MAIN_DIMENSIONS)) as engine:
+        notes = engine.collection("user:1")
+        fill(notes, corpus.texts(ERASED))
+        records = notes.list()
+        for record in records[::ERASE_EVERY]:
+            notes.delete(record.id)
+        full = once(engine.erase_deleted)
+        for record in records[1::ERASE_EVERY]:
+            notes.delete(record.id)
+        fast = once(lambda: engine.erase_deleted(fast=True))
+    path.unlink()
+    return full, fast
+
+
+def zeroing(folder: Path, corpus: Corpus) -> dict[str, tuple[float, float]]:
+    """Seconds per add, update and delete in a file of ``ZEROED`` records with vectors: with
+    SQLite zeroing what they remove, as every engine does, and without, as pybodn 1.0 writes.
+    Runs with and without take turns, so that other programs on the machine slow both alike."""
+    path = folder / "zeroing.db"
+    with MemoryEngine.sqlite(path, embedder=random_model(MAIN_DIMENSIONS)) as engine:
+        connection = engine._store._connection  # type: ignore[attr-defined]  # noqa: SLF001
+        notes = engine.collection("user:1")
+        fill(notes, corpus.texts(ZEROED))
+        records = iter(notes.list())
+        texts = corpus.texts(TURNS * 2 * OPERATIONS * 2, seed=-2)  # for the adds and the updates
+
+        def add() -> None:
+            for _ in range(OPERATIONS):
+                notes.add(next(texts))
+
+        def update() -> None:
+            for _ in range(OPERATIONS):
+                notes.update(next(records).id, content=next(texts))
+
+        def delete() -> None:
+            for _ in range(OPERATIONS):
+                notes.delete(next(records).id)
+
+        def taking_turns(write: Callable[[], None]) -> tuple[float, float]:
+            timings: dict[bool, list[float]] = {True: [], False: []}
+            for turn in range(TURNS):
+                for zeroes in (turn % 2 == 0, turn % 2 == 1):  # each goes first every other turn
+                    connection.execute(f"PRAGMA secure_delete = {int(zeroes)}").fetchall()
+                    timings[zeroes].append(once(write) / OPERATIONS)
+            return min(timings[True]), min(timings[False])
+
+        measured = {write.__name__: taking_turns(write) for write in (add, update, delete)}
+    path.unlink()
+    return measured
+
+
 def awaiting() -> float:
     """How much longer ``count()`` takes awaited than called straight, in seconds per call."""
     with MemoryEngine.in_memory() as engine:
@@ -231,6 +291,10 @@ def duration(seconds: float) -> str:
     return f"{milliseconds:.1f} ms" if milliseconds < 10 else f"{milliseconds:.0f} ms"
 
 
+def microseconds(seconds: float) -> str:
+    return f"{seconds * 1e6:.0f} µs"
+
+
 def size(count: int) -> str:
     return f"{count / 1e9:.1f} GB" if count >= 1e9 else f"{count / 1e6:,.0f} MB"
 
@@ -251,6 +315,8 @@ def main() -> None:
         }
         rare, common = many_namespaces(folder, corpus)
         count, page, purge, erase = hidden(folder, corpus)
+        full_erase, fast_erase = erasing(folder, corpus)
+        costs = zeroing(folder, corpus)
         opened = {
             release: first_open(folder, corpus, version) for release, version in OLDER.items()
         }
@@ -282,6 +348,9 @@ def main() -> None:
         f"{duration(chosen[records].dedupe)} at {records:,}" for records in RECORDS
     )
     upgrades = ", ".join(f"from {release} {duration(opened[release])}" for release in OLDER)
+    zeroed = ", ".join(
+        f"{write} {microseconds(on)} and {microseconds(off)}" for write, (on, off) in costs.items()
+    )
     print(
         f"\nMemory of a search by meaning, vectors of {MAIN_DIMENSIONS:,} numbers: {memory}."
         f"\nFile of {RECORDS[-1]:,} records with vectors of {MAIN_DIMENSIONS:,} numbers:"
@@ -294,8 +363,13 @@ def main() -> None:
         f" count() {duration(count)}, the first page of list() {duration(page)},"
         f" purge_expired() of {HIDDEN // 2:,} records {duration(purge)},"
         f" then erase_deleted() {duration(erase)}."
+        f"\nFile of {ERASED:,} records with vectors of {MAIN_DIMENSIONS:,} numbers, after every"
+        f" {ERASE_EVERY}th is deleted: erase_deleted() {duration(full_erase)},"
+        f" erase_deleted(fast=True) {duration(fast_erase)}."
+        f"\nIn a file of {ZEROED:,} records with vectors of {MAIN_DIMENSIONS:,} numbers, with and"
+        f" without zeroing: {zeroed}."
         f"\nFirst open of a file of {UPGRADED:,} records from an older pybodn: {upgrades}."
-        f"\nAn awaited call takes {awaited * 1e6:.0f} µs longer than the same call straight."
+        f"\nAn awaited call takes {microseconds(awaited)} longer than the same call straight."
     )
 
 

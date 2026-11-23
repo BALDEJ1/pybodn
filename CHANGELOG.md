@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Every engine has SQLite write zeros over what a delete, `put`, `update` or `purge_expired()` removes from the file, which the fast erase relies on.
+- Every engine has SQLite write zeros over what a delete, `put`, `update` or `purge_expired()` removes from the file, which the fast erase relies on. It makes a delete about a fifth slower; the README section Speed and size has the figures.
 
 - The README has badges and a short animation of a program that saves two memories and finds them in later runs.
 
