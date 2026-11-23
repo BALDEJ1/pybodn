@@ -6,6 +6,7 @@ Run it once for each release, from the repository root, with that release from P
     uv run --isolated --no-project --with pybodn==0.1.0 python -m tests.golden.make_golden
     uv run --isolated --no-project --with "pybodn[vector]==0.2.0" python -m tests.golden.make_golden
     uv run --isolated --no-project --with "pybodn[vector]==0.3.0" python -m tests.golden.make_golden
+    uv run --isolated --no-project --with "pybodn[vector]==1.0.1" python -m tests.golden.make_golden
 
 Each run writes tests/golden/pybodn-<release>.db, with only what that release can store. It
 refuses to replace a file that is there: the tests rely on these files never changing.

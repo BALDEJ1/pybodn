@@ -174,9 +174,9 @@ class AsyncMemoryEngine:
         """Purge expired records, as ``MemoryEngine.purge_expired()`` does."""
         return await _in_thread(self._engine.purge_expired)
 
-    async def erase_deleted(self) -> None:
+    async def erase_deleted(self, *, fast: bool = False) -> None:
         """Erase deleted data, as ``MemoryEngine.erase_deleted()`` does."""
-        return await _in_thread(self._engine.erase_deleted)
+        return await _in_thread(self._engine.erase_deleted, fast=fast)
 
     async def close(self) -> None:
         """Close the storage. Safe to call again.

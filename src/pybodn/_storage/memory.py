@@ -122,7 +122,7 @@ class InMemoryStore:
                 self._remove(namespace, record_id)
             return len(expired)
 
-    def erase_deleted(self) -> None:
+    def erase_deleted(self, *, fast: bool) -> None:
         with self._lock:
             ensure_open(self)  # what a delete removes is gone at once: nothing is left to erase
 
