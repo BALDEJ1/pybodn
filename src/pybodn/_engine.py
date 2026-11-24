@@ -91,6 +91,17 @@ class MemoryEngine:
             self._store, validate.text("namespace", namespace), self._clock, self._vectorize
         )
 
+    def namespaces(self) -> list[str]:
+        """The namespaces that hold at least one record, archived and expired ones too, each
+        once, in the order of their characters' code points.
+
+        A namespace exists while it holds a record, so one whose last record is deleted or
+        purged is no longer named. It reads the namespace of every record, so it takes longer
+        as the file grows.
+        """
+        ensure_open(self._store)
+        return self._store.namespaces()
+
     def embed_missing(self) -> int:
         """Give a vector of the engine's model to every record without one, and return how many.
 

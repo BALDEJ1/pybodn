@@ -86,6 +86,7 @@ STORE_CALLS: dict[str, Callable[[Store], object]] = {
         "user:123", QUERY, where=EVERYTHING, limit=10
     ),
     "last_seq": lambda store: store.last_seq(),
+    "namespaces": lambda store: store.namespaces(),
     "missing_vectors": lambda store: store.missing_vectors("fake-1", after=0, until=1, limit=10),
     "write_vectors": lambda store: store.write_vectors([]),
 }
@@ -117,7 +118,7 @@ def test_a_closed_engine_cannot_be_entered_again(engine: MemoryEngine) -> None:
         pass
 
 
-@pytest.mark.parametrize("name", ["embed_missing", "purge_expired", "erase_deleted"])
+@pytest.mark.parametrize("name", ["embed_missing", "purge_expired", "erase_deleted", "namespaces"])
 def test_an_engine_wide_call_after_close_raises_engine_closed_error(
     engine: MemoryEngine, name: str
 ) -> None:

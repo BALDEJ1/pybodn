@@ -164,6 +164,9 @@ class Store(Protocol):
     def last_seq(self) -> int:
         """The place of the last record in the order added, across namespaces; 0 if none."""
 
+    def namespaces(self) -> builtins.list[str]:
+        """Each namespace that holds a record, hidden records too, once, in code point order."""
+
     def missing_vectors(
         self, model: str, *, after: int, until: int, limit: int
     ) -> builtins.list[MissingVector]:

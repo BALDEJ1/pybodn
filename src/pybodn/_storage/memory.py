@@ -184,6 +184,12 @@ class InMemoryStore:
                 default=0,
             )
 
+    def namespaces(self) -> builtins.list[str]:
+        with self._lock:
+            ensure_open(self)
+            # A namespace goes with its last record, so each one kept holds some.
+            return sorted(self._namespaces)
+
     def missing_vectors(
         self, model: str, *, after: int, until: int, limit: int
     ) -> builtins.list[MissingVector]:

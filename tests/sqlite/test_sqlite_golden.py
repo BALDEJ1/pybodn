@@ -71,6 +71,19 @@ def test_a_file_from_a_release_keeps_its_records_and_finds_them(path: Path, rele
     assert format_marks(path) == FORMAT_MARKS
 
 
+@pytest.mark.parametrize("release", RELEASES)
+def test_a_file_from_a_release_names_its_namespaces(path: Path, release: str) -> None:
+    # Arrange
+    shutil.copyfile(path_of(release), path)
+
+    # Act
+    with MemoryEngine.sqlite(path) as engine:
+        names = engine.namespaces()
+
+    # Assert
+    assert names == sorted([NAMESPACE, OTHER_NAMESPACE])
+
+
 @pytest.mark.parametrize("release", WITH_VECTORS)
 def test_a_file_from_a_release_finds_records_by_their_stored_vectors(
     path: Path, release: str
