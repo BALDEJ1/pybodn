@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MemoryEngine.namespaces()` and its async twin list the namespaces that hold at least one record, archived and expired records included, each once and in code point order. A namespace whose last record is deleted or purged is no longer listed.
+
 ## [1.1.0] - 2026-11-23
 
 ### Added

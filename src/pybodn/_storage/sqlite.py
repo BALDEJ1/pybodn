@@ -143,6 +143,8 @@ _DROP_VECTOR = (
 )
 _VECTOR_SIZE = "SELECT length(vector) FROM memory_vectors WHERE model = ? LIMIT 1"
 _LAST_SEQ = "SELECT coalesce(max(seq), 0) FROM memories"
+# Text compares by its UTF-8 bytes, which keeps the order of code points.
+_NAMESPACES = "SELECT DISTINCT namespace FROM memories ORDER BY namespace"
 _MISSING_VECTORS = (
     "SELECT seq, namespace, id, content FROM memories WHERE seq > ? AND seq <= ?"
     " AND NOT EXISTS (SELECT 1 FROM memory_vectors WHERE memory_vectors.seq = memories.seq"
@@ -421,6 +423,13 @@ class SQLiteStore:
             with self._up_to_date(_BEGIN_READ):
                 last: int = _single(self._connection, _LAST_SEQ)
         return last
+
+    def namespaces(self) -> builtins.list[str]:
+        with self._lock:
+            ensure_open(self)
+            with self._up_to_date(_BEGIN_READ):
+                rows = self._connection.execute(_NAMESPACES).fetchall()
+        return [row[0] for row in rows]
 
     def missing_vectors(
         self, model: str, *, after: int, until: int, limit: int

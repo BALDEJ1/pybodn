@@ -166,6 +166,10 @@ class AsyncMemoryEngine:
         """Get the records of ``namespace``, as ``MemoryEngine.collection()`` does."""
         return AsyncCollection(self._engine.collection(namespace))
 
+    async def namespaces(self) -> list[str]:
+        """List the namespaces that hold a record, as ``MemoryEngine.namespaces()`` does."""
+        return await _in_thread(self._engine.namespaces)
+
     async def embed_missing(self) -> int:
         """Embed the records that have no vector, as ``MemoryEngine.embed_missing()`` does."""
         return await _in_thread(self._engine.embed_missing)

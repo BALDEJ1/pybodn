@@ -110,6 +110,7 @@ CALLS: dict[str, tuple[tuple[object, ...], dict[str, object]]] = {
     "count": ((), {"min_importance": 0.5}),
     "search": (("кава",), {"limit": 3, "mode": "text"}),
     "embed_missing": ((), {}),
+    "namespaces": ((), {}),
     "purge_expired": ((), {}),
     "erase_deleted": ((), {"fast": True}),
 }

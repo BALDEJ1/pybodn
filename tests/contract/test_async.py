@@ -36,6 +36,7 @@ def test_every_method_reaches_the_store(store: Store) -> None:
             assert await notes.count() == 3
             assert [hit.record for hit in await notes.search("кава")] == [changed]
             assert await engine.purge_expired() == 0
+            assert await engine.namespaces() == ["user:123"]
 
     asyncio.run(use_every_method())
 

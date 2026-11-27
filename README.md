@@ -107,6 +107,11 @@ or a conversation. Namespaces never see each other's records, and the same key i
 namespaces names two different records. A collection holds no records itself, so getting one is
 cheap.
 
+`engine.namespaces()` lists the namespaces that hold at least one record, archived and expired
+records included, each once and in the order of their characters' code points. A namespace has no
+life of its own: it appears with its first record and is gone once its last one is deleted or
+purged. The call reads the namespace of every record, so it takes longer as the file grows.
+
 Namespaces do share the word counts that a search by words uses to rank records (see By words).
 If clients must be kept fully apart, give each one its own file.
 
@@ -123,6 +128,7 @@ with MemoryEngine.in_memory() as engine:
 
     print(bob.get(note.id))  # None
     print(bob.count())  # 1
+    print(engine.namespaces())  # ['user:alice', 'user:bob']
 ```
 
 ## Records
